@@ -142,6 +142,7 @@ class _Translations$cockpit$zh extends Translations$cockpit$en {
 	@override late final _Translations$cockpit$layoutPreview$zh layoutPreview = _Translations$cockpit$layoutPreview$zh._(_root);
 	@override late final _Translations$cockpit$telemetry$zh telemetry = _Translations$cockpit$telemetry$zh._(_root);
 	@override late final _Translations$cockpit$panelView$zh panelView = _Translations$cockpit$panelView$zh._(_root);
+	@override late final _Translations$cockpit$cloneRepoDialog$zh cloneRepoDialog = _Translations$cockpit$cloneRepoDialog$zh._(_root);
 }
 
 // Path: settings
@@ -1425,6 +1426,39 @@ class _Translations$cockpit$panelView$zh extends Translations$cockpit$panelView$
 	@override String get unavailable => '面板需要内嵌 web 视图，目前在 Linux 上尚不可用。';
 	@override String get openInBrowser => '在浏览器中打开';
 	@override String get openAsHtml => '以 HTML 打开';
+}
+
+// Path: cockpit.cloneRepoDialog
+class _Translations$cockpit$cloneRepoDialog$zh extends Translations$cockpit$cloneRepoDialog$en {
+	_Translations$cockpit$cloneRepoDialog$zh._(TranslationsZh root) : this._root = root, super.internal(root);
+
+	final TranslationsZh _root; // ignore: unused_field
+
+	// Translations
+	@override String get menuItem => '克隆仓库';
+	@override String get title => '克隆 Git 仓库';
+	@override String get urlLabel => '仓库 URL（SSH 或 HTTPS）';
+	@override String get urlPlaceholder => 'git@github.com:org/repo.git';
+	@override String get paste => '粘贴';
+	@override String get parentLabel => '目标文件夹';
+	@override String get choose => '选择…';
+	@override String get chooseParentDialogTitle => '选择克隆仓库的位置';
+	@override String get folderLabel => '文件夹名称';
+	@override String targetPreview({required Object path}) => '克隆到 ${path}';
+	@override String get errUrl => '请粘贴 SSH（git@host:org/repo.git）或 HTTPS 的 Git URL。';
+	@override String get errParent => '请选择一个已存在的目标文件夹。';
+	@override String get errFolder => '文件夹名称必填，且不能包含 / 或 \。';
+	@override String errExists({required Object path}) => '${path} 已存在且不为空。';
+	@override String get cloneAction => '克隆';
+	@override String progressTitle({required Object name}) => '正在克隆 ${name}';
+	@override String get errFolderChars => 'Windows 的文件夹名称不能包含 < > : " | ? *。';
+	@override String errFolderReserved({required Object name}) => '"${name}" 是 Windows 的保留名称。';
+	@override String get errFolderTrailing => '在 Windows 上，文件夹名称不能以点或空格结尾。';
+	@override String get hintGitMissing => '未找到 Git。请安装后重试：macOS 上运行 xcode-select --install（或 brew install git）；Windows 上从 git-scm.com 安装 Git for Windows。';
+	@override String get hintXcodeTools => '缺少 macOS Command Line Tools。请在终端运行 xcode-select --install 后重试。';
+	@override String get hintSshMissing => '此 URL 无法使用 SSH。请改用 HTTPS URL，或安装 OpenSSH（Git for Windows 自带）。';
+	@override String get hintHostKey => '无法验证服务器的 SSH 主机密钥，或密钥已更改。重试前请检查 ~/.ssh/known_hosts。';
+	@override String get hintAuth => '访问被拒绝或仓库不存在。SSH：用 ssh -T git@github.com 测试密钥；HTTPS：通过 Git 凭据管理器登录（或 gh auth login）。';
 }
 
 // Path: settings.language
@@ -2838,6 +2872,30 @@ extension on TranslationsZh {
 			'cockpit.panelView.unavailable' => '面板需要内嵌 web 视图，目前在 Linux 上尚不可用。',
 			'cockpit.panelView.openInBrowser' => '在浏览器中打开',
 			'cockpit.panelView.openAsHtml' => '以 HTML 打开',
+			'cockpit.cloneRepoDialog.menuItem' => '克隆仓库',
+			'cockpit.cloneRepoDialog.title' => '克隆 Git 仓库',
+			'cockpit.cloneRepoDialog.urlLabel' => '仓库 URL（SSH 或 HTTPS）',
+			'cockpit.cloneRepoDialog.urlPlaceholder' => 'git@github.com:org/repo.git',
+			'cockpit.cloneRepoDialog.paste' => '粘贴',
+			'cockpit.cloneRepoDialog.parentLabel' => '目标文件夹',
+			'cockpit.cloneRepoDialog.choose' => '选择…',
+			'cockpit.cloneRepoDialog.chooseParentDialogTitle' => '选择克隆仓库的位置',
+			'cockpit.cloneRepoDialog.folderLabel' => '文件夹名称',
+			'cockpit.cloneRepoDialog.targetPreview' => ({required Object path}) => '克隆到 ${path}',
+			'cockpit.cloneRepoDialog.errUrl' => '请粘贴 SSH（git@host:org/repo.git）或 HTTPS 的 Git URL。',
+			'cockpit.cloneRepoDialog.errParent' => '请选择一个已存在的目标文件夹。',
+			'cockpit.cloneRepoDialog.errFolder' => '文件夹名称必填，且不能包含 / 或 \。',
+			'cockpit.cloneRepoDialog.errExists' => ({required Object path}) => '${path} 已存在且不为空。',
+			'cockpit.cloneRepoDialog.cloneAction' => '克隆',
+			'cockpit.cloneRepoDialog.progressTitle' => ({required Object name}) => '正在克隆 ${name}',
+			'cockpit.cloneRepoDialog.errFolderChars' => 'Windows 的文件夹名称不能包含 < > : " | ? *。',
+			'cockpit.cloneRepoDialog.errFolderReserved' => ({required Object name}) => '"${name}" 是 Windows 的保留名称。',
+			'cockpit.cloneRepoDialog.errFolderTrailing' => '在 Windows 上，文件夹名称不能以点或空格结尾。',
+			'cockpit.cloneRepoDialog.hintGitMissing' => '未找到 Git。请安装后重试：macOS 上运行 xcode-select --install（或 brew install git）；Windows 上从 git-scm.com 安装 Git for Windows。',
+			'cockpit.cloneRepoDialog.hintXcodeTools' => '缺少 macOS Command Line Tools。请在终端运行 xcode-select --install 后重试。',
+			'cockpit.cloneRepoDialog.hintSshMissing' => '此 URL 无法使用 SSH。请改用 HTTPS URL，或安装 OpenSSH（Git for Windows 自带）。',
+			'cockpit.cloneRepoDialog.hintHostKey' => '无法验证服务器的 SSH 主机密钥，或密钥已更改。重试前请检查 ~/.ssh/known_hosts。',
+			'cockpit.cloneRepoDialog.hintAuth' => '访问被拒绝或仓库不存在。SSH：用 ssh -T git@github.com 测试密钥；HTTPS：通过 Git 凭据管理器登录（或 gh auth login）。',
 			'settings.language.title' => '语言',
 			'settings.language.system' => '跟随系统',
 			'settings.language.english' => 'English',
@@ -3048,6 +3106,8 @@ extension on TranslationsZh {
 			'settings.remoteHosts.statusOffline' => '离线',
 			'settings.remoteHosts.statusIdle' => '未连接',
 			'settings.remoteHosts.helpTitle' => '工作原理',
+			_ => null,
+		} ?? switch (path) {
 			'settings.remoteHosts.helpBody' => 'Cockpit 通过 SSH 连接到你的机器，并与一个小型服务器通信，由它运行终端、文件和 git。主机必须安装并运行 Cockpit（桌面版）或 cockpit-server，并将本设备的公钥添加到其 ~/.ssh/authorized_keys。',
 			'automation.error.unavailable' => ({required Object harness}) => '${harness} 未安装或不在 PATH 中。',
 			'automation.error.modelUnavailable' => ({required Object model, required Object harness}) => '模型「${model}」在 ${harness} 中不可用。请在设置中选择其他模型。',
@@ -3072,8 +3132,6 @@ extension on TranslationsZh {
 			'fileOperation.error.notFound' => ({required Object name}) => '未找到：「${name}」。',
 			'fileOperation.error.invalidPath' => '无效的路径。',
 			'fileOperation.error.emptyName' => '名称不能为空。',
-			_ => null,
-		} ?? switch (path) {
 			'fileOperation.error.noWorkspace' => '未选择工作区。',
 			'fileOperation.error.cannotMoveIntoItself' => '无法将文件夹移动到其自身内部。',
 			'fileOperation.error.clipboardEmpty' => '剪贴板为空。',

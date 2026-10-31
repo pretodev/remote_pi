@@ -144,6 +144,7 @@ class _Translations$cockpit$pt_BR extends Translations$cockpit$en {
 	@override late final _Translations$cockpit$layoutPreview$pt_BR layoutPreview = _Translations$cockpit$layoutPreview$pt_BR._(_root);
 	@override late final _Translations$cockpit$telemetry$pt_BR telemetry = _Translations$cockpit$telemetry$pt_BR._(_root);
 	@override late final _Translations$cockpit$panelView$pt_BR panelView = _Translations$cockpit$panelView$pt_BR._(_root);
+	@override late final _Translations$cockpit$cloneRepoDialog$pt_BR cloneRepoDialog = _Translations$cockpit$cloneRepoDialog$pt_BR._(_root);
 }
 
 // Path: settings
@@ -1503,6 +1504,39 @@ class _Translations$cockpit$panelView$pt_BR extends Translations$cockpit$panelVi
 	@override String get unavailable => 'Painéis precisam da web view embutida, que ainda não existe no Linux.';
 	@override String get openInBrowser => 'Abrir no navegador';
 	@override String get openAsHtml => 'Abrir como HTML';
+}
+
+// Path: cockpit.cloneRepoDialog
+class _Translations$cockpit$cloneRepoDialog$pt_BR extends Translations$cockpit$cloneRepoDialog$en {
+	_Translations$cockpit$cloneRepoDialog$pt_BR._(TranslationsPtBr root) : this._root = root, super.internal(root);
+
+	final TranslationsPtBr _root; // ignore: unused_field
+
+	// Translations
+	@override String get menuItem => 'Clonar repositório';
+	@override String get title => 'Clonar repositório Git';
+	@override String get urlLabel => 'URL do repositório (SSH ou HTTPS)';
+	@override String get urlPlaceholder => 'git@github.com:org/repo.git';
+	@override String get paste => 'Colar';
+	@override String get parentLabel => 'Pasta de destino';
+	@override String get choose => 'Escolher…';
+	@override String get chooseParentDialogTitle => 'Escolha onde clonar o repositório';
+	@override String get folderLabel => 'Nome da pasta';
+	@override String targetPreview({required Object path}) => 'Clona em ${path}';
+	@override String get errUrl => 'Cole uma URL Git SSH (git@host:org/repo.git) ou HTTPS.';
+	@override String get errParent => 'Escolha uma pasta de destino existente.';
+	@override String get errFolder => 'Nome da pasta obrigatório, sem / ou \.';
+	@override String errExists({required Object path}) => '${path} já existe e não está vazia.';
+	@override String get cloneAction => 'Clonar';
+	@override String progressTitle({required Object name}) => 'Clonando ${name}';
+	@override String get errFolderChars => 'O Windows não aceita < > : " | ? * em nome de pasta.';
+	@override String errFolderReserved({required Object name}) => '"${name}" é um nome reservado no Windows.';
+	@override String get errFolderTrailing => 'No Windows, nome de pasta não pode terminar com ponto ou espaço.';
+	@override String get hintGitMissing => 'Git não encontrado. Instale e tente de novo: no macOS rode xcode-select --install (ou brew install git); no Windows instale o Git for Windows (git-scm.com).';
+	@override String get hintXcodeTools => 'Faltam as Command Line Tools do macOS. Rode xcode-select --install no Terminal e tente de novo.';
+	@override String get hintSshMissing => 'SSH indisponível para esta URL. Use a URL HTTPS ou instale o OpenSSH (o Git for Windows já traz um).';
+	@override String get hintHostKey => 'A chave SSH do servidor não pôde ser verificada ou mudou. Confira o ~/.ssh/known_hosts antes de tentar de novo.';
+	@override String get hintAuth => 'Acesso negado ou repositório não encontrado. No SSH, teste sua chave com ssh -T git@github.com; no HTTPS, entre pelo gerenciador de credenciais do Git (ou gh auth login).';
 }
 
 // Path: settings.language
@@ -2916,6 +2950,30 @@ extension on TranslationsPtBr {
 			'cockpit.panelView.unavailable' => 'Painéis precisam da web view embutida, que ainda não existe no Linux.',
 			'cockpit.panelView.openInBrowser' => 'Abrir no navegador',
 			'cockpit.panelView.openAsHtml' => 'Abrir como HTML',
+			'cockpit.cloneRepoDialog.menuItem' => 'Clonar repositório',
+			'cockpit.cloneRepoDialog.title' => 'Clonar repositório Git',
+			'cockpit.cloneRepoDialog.urlLabel' => 'URL do repositório (SSH ou HTTPS)',
+			'cockpit.cloneRepoDialog.urlPlaceholder' => 'git@github.com:org/repo.git',
+			'cockpit.cloneRepoDialog.paste' => 'Colar',
+			'cockpit.cloneRepoDialog.parentLabel' => 'Pasta de destino',
+			'cockpit.cloneRepoDialog.choose' => 'Escolher…',
+			'cockpit.cloneRepoDialog.chooseParentDialogTitle' => 'Escolha onde clonar o repositório',
+			'cockpit.cloneRepoDialog.folderLabel' => 'Nome da pasta',
+			'cockpit.cloneRepoDialog.targetPreview' => ({required Object path}) => 'Clona em ${path}',
+			'cockpit.cloneRepoDialog.errUrl' => 'Cole uma URL Git SSH (git@host:org/repo.git) ou HTTPS.',
+			'cockpit.cloneRepoDialog.errParent' => 'Escolha uma pasta de destino existente.',
+			'cockpit.cloneRepoDialog.errFolder' => 'Nome da pasta obrigatório, sem / ou \.',
+			'cockpit.cloneRepoDialog.errExists' => ({required Object path}) => '${path} já existe e não está vazia.',
+			'cockpit.cloneRepoDialog.cloneAction' => 'Clonar',
+			'cockpit.cloneRepoDialog.progressTitle' => ({required Object name}) => 'Clonando ${name}',
+			'cockpit.cloneRepoDialog.errFolderChars' => 'O Windows não aceita < > : " | ? * em nome de pasta.',
+			'cockpit.cloneRepoDialog.errFolderReserved' => ({required Object name}) => '"${name}" é um nome reservado no Windows.',
+			'cockpit.cloneRepoDialog.errFolderTrailing' => 'No Windows, nome de pasta não pode terminar com ponto ou espaço.',
+			'cockpit.cloneRepoDialog.hintGitMissing' => 'Git não encontrado. Instale e tente de novo: no macOS rode xcode-select --install (ou brew install git); no Windows instale o Git for Windows (git-scm.com).',
+			'cockpit.cloneRepoDialog.hintXcodeTools' => 'Faltam as Command Line Tools do macOS. Rode xcode-select --install no Terminal e tente de novo.',
+			'cockpit.cloneRepoDialog.hintSshMissing' => 'SSH indisponível para esta URL. Use a URL HTTPS ou instale o OpenSSH (o Git for Windows já traz um).',
+			'cockpit.cloneRepoDialog.hintHostKey' => 'A chave SSH do servidor não pôde ser verificada ou mudou. Confira o ~/.ssh/known_hosts antes de tentar de novo.',
+			'cockpit.cloneRepoDialog.hintAuth' => 'Acesso negado ou repositório não encontrado. No SSH, teste sua chave com ssh -T git@github.com; no HTTPS, entre pelo gerenciador de credenciais do Git (ou gh auth login).',
 			'settings.language.title' => 'Idioma',
 			'settings.language.system' => 'Sistema',
 			'settings.language.english' => 'Inglês',
@@ -3126,6 +3184,8 @@ extension on TranslationsPtBr {
 			'settings.remoteHosts.statusOffline' => 'Offline',
 			'settings.remoteHosts.statusIdle' => 'Não conectado',
 			'settings.remoteHosts.helpTitle' => 'Como funciona',
+			_ => null,
+		} ?? switch (path) {
 			'settings.remoteHosts.helpBody' => 'O Cockpit conecta na sua máquina por SSH e fala com um servidor pequeno que roda os terminais, arquivos e git lá. O host precisa ter o Cockpit (desktop) ou o cockpit-server instalado e rodando, e a chave pública deste dispositivo adicionada no ~/.ssh/authorized_keys dele.',
 			'automation.error.unavailable' => ({required Object harness}) => '${harness} não está instalado ou não está no PATH.',
 			'automation.error.modelUnavailable' => ({required Object model, required Object harness}) => 'O modelo "${model}" não está disponível para ${harness}. Escolha outro modelo em Configurações.',
@@ -3150,8 +3210,6 @@ extension on TranslationsPtBr {
 			'fileOperation.error.notFound' => ({required Object name}) => 'Não encontrado: “${name}”.',
 			'fileOperation.error.invalidPath' => 'Caminho inválido.',
 			'fileOperation.error.emptyName' => 'O nome não pode ficar vazio.',
-			_ => null,
-		} ?? switch (path) {
 			'fileOperation.error.noWorkspace' => 'Nenhum workspace selecionado.',
 			'fileOperation.error.cannotMoveIntoItself' => 'Não é possível mover uma pasta para dentro dela mesma.',
 			'fileOperation.error.clipboardEmpty' => 'A área de transferência está vazia.',
