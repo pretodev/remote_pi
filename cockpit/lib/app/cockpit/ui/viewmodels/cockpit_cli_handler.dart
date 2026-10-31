@@ -1,3 +1,6 @@
+import '../document/open_files_channel.dart';
+import '../session/orchestration_session.dart';
+import 'orchestration_cli_handler.dart';
 import 'dart:async' show unawaited;
 import 'dart:convert';
 import 'dart:io' show Directory, File, FileSystemException, Platform;
@@ -29,7 +32,6 @@ import 'package:cockpit/app/cockpit/domain/entities/browser_capability.dart';
 import 'package:cockpit/app/core/domain/result.dart';
 import 'package:cockpit/app/core/utils/path_utils.dart';
 import 'package:cockpit/app/core/utils/shell_command.dart';
-import 'package:cockpit/app/cockpit/ui/document/document_windows.dart';
 import 'package:cockpit/app/cockpit/ui/session/empty_tab.dart';
 import 'package:cockpit/app/cockpit/ui/session/browser_session.dart';
 import 'package:cockpit/app/cockpit/ui/session/notebook_session.dart';
@@ -130,6 +132,37 @@ class CockpitCliHandler {
   /// `BuildContext`, só lê/muta o estado da VM. Retorna rápido (o `insertText`
   /// só enfileira o write no PTY).
   Future<CockpitCommandResult> handle(CockpitCommand rawCommand) async {
+    final scoped = await OrchestrationCliRouter(
+      findSession: _vm.session,
+      findOwner: _vm.orchestrationById,
+      focusedTabId: () => _vm.focusedTabId,
+      workspace: (id) {
+        final project = _vm.projectById(id);
+        return project == null
+            ? null
+            : (
+                root: project.effectiveRoot,
+                name: project.name,
+                remote: project.remoteHostId != null,
+              );
+      },
+      projectCommand: _handleUnscoped,
+    ).handle(rawCommand);
+    return scoped ?? _handleUnscoped(rawCommand);
+  }
+
+  Future<CockpitCommandResult> _handleUnscoped(
+    CockpitCommand rawCommand,
+  ) async {
+    final originId = rawCommand.callerTabId;
+    final originPane = originId == null ? null : _vm.session(originId);
+    if (originId != null &&
+        (originPane == null ||
+            (originPane is TerminalSession && originPane.hasExited))) {
+      return const CockpitCommandResult.fail(
+        'Originating pane is no longer available',
+      );
+    }
     // `--focused` chega como o sentinela `@focused` no `tabId`: quem sabe qual
     // aba está em foco é a VM, não a CLI. Resolver aqui (e não em cada case)
     // vale pra todo comando que mira aba. Ferramenta externa (ditado por voz,
@@ -145,9 +178,26 @@ class CockpitCliHandler {
     if (TelemetryCliHandler.handles(c.cmd)) {
       // `--app` (plano 68): store do próprio Cockpit, sem workspace.
       if (c.args['app'] == true) return _telemetry.handle(c, null, '');
+      final telemetryOrigin = originPane ?? _vm.session(c.tabId ?? '');
+      final ownerId = telemetryOrigin?.owner.instanceId;
+      bool originAvailable() {
+        if (ownerId == null) return true;
+        final owner = _vm.orchestrationById(ownerId);
+        return owner != null &&
+            !owner.disposed &&
+            !owner.closing &&
+            identical(_vm.session(telemetryOrigin!.id), telemetryOrigin);
+      }
+
       return _projectCommand(
         c,
-        (project, root) => _telemetry.handle(c, project, root),
+        (project, root) => _telemetry.handle(
+          c,
+          project,
+          root,
+          terminalOwnerId: ownerId,
+          originAvailable: originAvailable,
+        ),
       );
     }
     switch (c.cmd) {
@@ -178,6 +228,10 @@ class CockpitCliHandler {
           );
         }
         s.insertText(text);
+        final source = c.args['sourceTabId'];
+        if (source is String && source.isNotEmpty) {
+          _vm.recordGraphTraffic(source, id);
+        }
         return const CockpitCommandResult.ok();
 
       case 'list-panes':
@@ -262,7 +316,7 @@ class CockpitCliHandler {
         }
         for (final path in paths) {
           if (await File(path).exists() || await Directory(path).exists()) {
-            unawaited(DocumentWindows.open(path));
+            unawaited(OpenFilesChannel.open(path));
           }
         }
         return const CockpitCommandResult.ok();
@@ -312,6 +366,13 @@ class CockpitCliHandler {
               'invalid split "$split" (expected right or down)',
             );
         }
+        if (originId != null &&
+            (!identical(_vm.session(originId), originPane) ||
+                (originPane is TerminalSession && originPane.hasExited))) {
+          return const CockpitCommandResult.fail(
+            'Originating pane is no longer available',
+          );
+        }
         final title = (c.args['title'] ?? '').toString();
         final sender = c.tabId == null ? null : _vm.session(c.tabId!);
         String? anchorLeaf;
@@ -359,6 +420,11 @@ class CockpitCliHandler {
             return CockpitCommandResult.fail('tab "$id" does not exist');
           }
         }
+        if (s is OrchestrationSession) {
+          return const CockpitCommandResult.fail(
+            'Close the orchestration app through its own controls',
+          );
+        }
         // `closeTab` opera sobre o workspace ATIVO (lê `_activeTree`), então
         // fechar aba de outro workspace exige trazê-lo pra frente antes —
         // mesma regra do `open`/`new-tab`.
@@ -378,6 +444,11 @@ class CockpitCliHandler {
               'Neovim has modified buffers; close it from the UI to confirm',
             );
           }
+        }
+        if (_vm.graphBoxForTab(s.id) != null) {
+          return const CockpitCommandResult.fail(
+            'This terminal belongs to a graph box. Close it in the Cockpit UI to choose whether to keep or remove the box.',
+          );
         }
         // O fechamento roda DEPOIS da resposta (`afterResponse`): fechar a
         // própria aba emissora mata o PTY — e com ele o shell e o processo
@@ -722,7 +793,14 @@ class CockpitCliHandler {
             'tab "${s.id}" (${_paneKind(s)}) has no readable output',
           );
         }
-        return CockpitCommandResult.ok(readTerminalWindow(term, c.args));
+        final window = readTerminalWindow(term, c.args);
+        if ((window['lines'] as int? ?? 0) > 0) {
+          final source = c.args['sourceTabId'];
+          if (source is String && source.isNotEmpty) {
+            _vm.recordGraphTraffic(s.id, source);
+          }
+        }
+        return CockpitCommandResult.ok(window);
 
       // `cockpit exec <command...>` (plano 67) — roda uma linha de shell na
       // máquina do app e devolve stdout/stderr/exit code. O shell é o **perfil
@@ -773,15 +851,17 @@ class CockpitCliHandler {
             );
           }
         }
+        final environment = _vm.cliEnvironment(tabId: c.tabId);
+        final profile = _vm.defaultTerminalProfile;
         if (cwd.isNotEmpty && !await Directory(cwd).exists()) {
           return CockpitCommandResult.fail('cwd not found: "$cwd"');
         }
         final result = await runShellCommand(
           command,
           cwd: cwd.isEmpty ? null : cwd,
-          environment: _vm.cliEnvironment(tabId: c.tabId),
+          environment: environment,
           timeout: Duration(seconds: timeout <= 0 ? 60 : timeout),
-          profile: _vm.defaultTerminalProfile,
+          profile: profile,
         );
         return CockpitCommandResult.ok(result.toJson());
 
@@ -1683,6 +1763,11 @@ class CockpitCliHandler {
     if (c.tabId != _focusSentinel) return c;
     final id = _vm.focusedTabId;
     if (id == null || id.isEmpty) return null;
-    return CockpitCommand(cmd: c.cmd, tabId: id, args: c.args);
+    return CockpitCommand(
+      cmd: c.cmd,
+      tabId: id,
+      callerTabId: c.callerTabId,
+      args: c.args,
+    );
   }
 }

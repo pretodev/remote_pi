@@ -42,6 +42,7 @@ class AdaptiveTerminalPane extends StatelessWidget {
     this.readOnly = false,
     this.enableLineHover = false,
     this.onContextMenu,
+    this.ownerShortcuts = const {},
   });
 
   final CockpitTerminalController terminal;
@@ -55,6 +56,7 @@ class AdaptiveTerminalPane extends StatelessWidget {
   final bool readOnly;
   final bool enableLineHover;
   final TerminalContextMenuCallback? onContextMenu;
+  final Map<ShortcutActivator, VoidCallback> ownerShortcuts;
 
   @override
   Widget build(BuildContext context) => switch (terminal) {
@@ -65,7 +67,21 @@ class AdaptiveTerminalPane extends StatelessWidget {
       textStyle: textStyle,
       theme: theme,
       hardwareKeyboardOnly: readOnly,
-      onKeyEvent: onKeyEvent ?? (_) => KeyEventResult.ignored,
+      onKeyEvent: (event) {
+        if (event is KeyDownEvent || event is KeyRepeatEvent) {
+          for (final entry in ownerShortcuts.entries) {
+            if (entry.key.accepts(event, HardwareKeyboard.instance)) {
+              entry.value();
+              return KeyEventResult.handled;
+            }
+          }
+        }
+        if (!readOnly && onPaste != null && isTerminalPasteEvent(event)) {
+          onPaste!();
+          return KeyEventResult.handled;
+        }
+        return onKeyEvent?.call(event) ?? KeyEventResult.ignored;
+      },
       onOpenFile: onOpenFile,
       enableLineHover: enableLineHover,
       onContextMenu: onContextMenu,
@@ -81,8 +97,14 @@ class AdaptiveTerminalPane extends StatelessWidget {
       readOnly: readOnly,
       enableLineHover: enableLineHover,
       onContextMenu: onContextMenu,
+      ownerShortcuts: ownerShortcuts,
     ),
   };
+}
+
+final class _CockpitOwnerShortcutIntent extends Intent {
+  const _CockpitOwnerShortcutIntent(this.invoke);
+  final VoidCallback invoke;
 }
 
 final class _CockpitPasteIntent extends Intent {
@@ -105,6 +127,7 @@ class _GhosttyPane extends StatefulWidget {
     required this.readOnly,
     required this.enableLineHover,
     required this.onContextMenu,
+    required this.ownerShortcuts,
   });
 
   final GhosttyTerminalController terminal;
@@ -117,6 +140,7 @@ class _GhosttyPane extends StatefulWidget {
   final bool readOnly;
   final bool enableLineHover;
   final TerminalContextMenuCallback? onContextMenu;
+  final Map<ShortcutActivator, VoidCallback> ownerShortcuts;
 
   @override
   State<_GhosttyPane> createState() => _GhosttyPaneState();
@@ -124,7 +148,6 @@ class _GhosttyPane extends StatefulWidget {
 
 class _GhosttyPaneState extends State<_GhosttyPane>
     with TerminalFindHost<_GhosttyPane> {
-  late final ghost.TerminalScrollController _scrollController;
   late final native.RenderState _renderState;
   TerminalLineHit? _hoverLine;
   Offset? _lastHoverLocal;
@@ -136,16 +159,13 @@ class _GhosttyPaneState extends State<_GhosttyPane>
   @override
   void initState() {
     super.initState();
-    _scrollController = ghost.TerminalScrollController()
-      ..addListener(_refreshHover);
+    widget.terminal.scrollController.addListener(_refreshHover);
     _renderState = native.RenderState();
   }
 
   @override
   void dispose() {
-    _scrollController
-      ..removeListener(_refreshHover)
-      ..dispose();
+    widget.terminal.scrollController.removeListener(_refreshHover);
     _renderState.dispose();
     super.dispose();
   }
@@ -226,6 +246,8 @@ class _GhosttyPaneState extends State<_GhosttyPane>
     final readOnly = widget.readOnly;
     final onPaste = widget.onPaste;
     final shortcuts = <ShortcutActivator, Intent>{
+      for (final entry in widget.ownerShortcuts.entries)
+        entry.key: _CockpitOwnerShortcutIntent(entry.value),
       // ⌘F / Ctrl-F opens the find bar (works even read-only — searching a
       // frozen buffer is fine). Resolved by the Actions scope below, where
       // flterm dispatches the shortcuts it receives. Ctrl-F only off macOS:
@@ -284,24 +306,16 @@ class _GhosttyPaneState extends State<_GhosttyPane>
     _visibleCellHeight = metrics.cellHeight / uiScale;
 
     final Widget terminalView = ghost.TerminalView(
-      // IDENTIDADE GLOBAL e estável por sessão (o controller é único por aba).
-      // Quando a árvore de panes reestrutura (split envolve a folha num
-      // SplitPane, fechar um pane remove um nó), a subárvore da TerminalView
-      // MUDA de posição na árvore de widgets. Sem GlobalKey o Flutter RE-INFLA
-      // a TerminalView na posição nova (novo initState → attachView) antes do
-      // dispose/detach da antiga → "already has an active view", e no mount
-      // simultâneo do restore cruza a State entre panes → espelho. Com a
-      // GlobalKey o Flutter MOVE o mesmo Element (preserva o ViewAttachment/
-      // lease do controller) em vez de recriar. Junto ao [TerminalUnzoomBox]
-      // sem LayoutBuilder, mata crash e espelho.
-      key: GlobalObjectKey(widget.terminal.controller),
+      // Identity is per session. StablePaneHost keeps this subtree under the
+      // same parent even when its tab moves to another dock.
+      key: ObjectKey(widget.terminal.controller),
       controller: widget.terminal.controller,
+      scrollController: widget.terminal.scrollController,
       presentationActive: widget.active,
       focusNode: widget.focusNode,
       showKeyboard: !readOnly,
       padding: EdgeInsets.zero,
       scrollPhysics: const ClampingScrollPhysics(),
-      scrollController: _scrollController,
       shortcuts: shortcuts,
       theme: ghosttyTheme,
       linkSettings: ghost.LinkSettings(
@@ -336,6 +350,13 @@ class _GhosttyPaneState extends State<_GhosttyPane>
             enabled: widget.active,
             child: Actions(
               actions: <Type, Action<Intent>>{
+                _CockpitOwnerShortcutIntent:
+                    CallbackAction<_CockpitOwnerShortcutIntent>(
+                      onInvoke: (intent) {
+                        intent.invoke();
+                        return null;
+                      },
+                    ),
                 _CockpitPasteIntent: CallbackAction<_CockpitPasteIntent>(
                   onInvoke: (_) {
                     onPaste?.call();
@@ -493,3 +514,14 @@ ghost.TerminalTheme _ghosttyTheme(
   fontSize: style.fontSize * uiScale,
   fontWeight: fontWeight,
 );
+
+/// The xterm callback and Ghostty shortcut map accept the same gestures.
+bool isTerminalPasteEvent(KeyEvent event) {
+  if (event is! KeyDownEvent || event.logicalKey != LogicalKeyboardKey.keyV) {
+    return false;
+  }
+  final keyboard = HardwareKeyboard.instance;
+  return !keyboard.isAltPressed &&
+      !keyboard.isShiftPressed &&
+      (keyboard.isControlPressed != keyboard.isMetaPressed);
+}

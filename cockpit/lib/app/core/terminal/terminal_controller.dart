@@ -198,6 +198,10 @@ final class GhosttyTerminalController implements CockpitTerminalController {
       _handleControllerResize(columns, rows);
 
   final ghost.TerminalController controller;
+  // A view can be reparented while its previous render subtree is detaching.
+  // Keep the viewport offset alive for the entire terminal session.
+  final ghost.TerminalScrollController scrollController =
+      ghost.TerminalScrollController();
 
   @override
   TerminalEngine get engine => TerminalEngine.ghostty;
@@ -322,6 +326,7 @@ final class GhosttyTerminalController implements CockpitTerminalController {
   void dispose() {
     _disposed = true;
     controller.dispose();
+    scrollController.dispose();
   }
 }
 
