@@ -37,7 +37,8 @@ Future<void> main(List<String> args) async {
   if (Platform.isWindows || Platform.isLinux) {
     final files = RunningInstance.filePathsFromArguments(args);
     if (files.isNotEmpty) {
-      if (await RunningInstance.forwardOpen(files)) exit(0);
+      // Windows forwards through its bundled CLI before creating an engine.
+      if (Platform.isLinux && await RunningInstance.forwardOpen(files)) exit(0);
       OpenFilesChannel.pendingFromArguments = files;
     }
   }

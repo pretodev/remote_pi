@@ -1,4 +1,19 @@
+import '../document/open_files_channel.dart';
+import '../document/native_document_router.dart';
+import 'package:cockpit/app/cockpit/domain/entities/orchestration_presentation.dart';
 import 'dart:async';
+import 'package:path/path.dart' as path;
+import '../session/orchestration_session.dart';
+import '../session/orchestration_file_presentation.dart';
+import '../document/worktree_document_host.dart';
+import '../services/orchestration_document_files.dart';
+import '../services/orchestration_controller.dart';
+import '../services/layout_scrollback_keys.dart';
+import '../services/orchestration_restore_state.dart';
+import '../services/orchestration_ownership_migration.dart';
+import '../services/agent_role_suggestion_service.dart';
+import '../../data/terminal/local_terminal_attachments.dart';
+import '../../domain/entities/orchestration_document.dart';
 import 'dart:convert';
 import 'dart:io'
     show
@@ -8,13 +23,16 @@ import 'dart:io'
         FileSystemEntity,
         FileSystemEntityType,
         FileSystemException,
-        Platform;
+        Platform,
+        PathExistsException,
+        PathNotFoundException;
 import 'dart:math' show max;
+import 'dart:ui' show Offset;
 
+import 'package:cockpit/app/cockpit/domain/services/terminal_attachment_service.dart';
 import 'package:cockpit/app/core/data/diagnostics/diagnostics_log.dart';
 import 'package:cockpit/app/core/data/diagnostics/performance_diagnostics.dart';
 import 'package:cockpit/app/core/data/setup/remote_pi_resolver.dart';
-import 'package:flutter/scheduler.dart' show SchedulerBinding;
 import 'package:flutter/services.dart' show PlatformException;
 import 'package:url_launcher/url_launcher.dart' as url_launcher;
 import 'package:window_manager/window_manager.dart';
@@ -79,6 +97,8 @@ import 'package:cockpit/app/cockpit/domain/entities/project.dart';
 import 'package:cockpit/app/cockpit/domain/entities/realm.dart';
 import 'package:cockpit/app/cockpit/domain/value_objects/uid.dart';
 import 'package:cockpit/app/cockpit/domain/entities/worktree.dart';
+import 'package:cockpit/app/cockpit/domain/entities/workspace_graph.dart';
+import 'package:cockpit/app/cockpit/ui/services/claude_graph_identity_resolver.dart';
 import 'package:cockpit/app/cockpit/domain/services/worktree_reconciler.dart';
 import 'package:cockpit/app/cockpit/domain/services/file_editor_facade.dart';
 import 'package:cockpit/app/cockpit/ui/session/scm_line_decoration_coordinator.dart';
@@ -118,7 +138,8 @@ import 'package:cockpit_remote/cockpit_remote.dart' show RemoteCliCommand;
 import 'package:cockpit/app/cockpit/data/filesystem/unified_diff_parser.dart';
 import 'package:cockpit/app/cockpit/domain/entities/remote_host.dart';
 import 'package:cockpit/app/cockpit/domain/entities/remote_workspace_pin.dart';
-import 'package:cockpit_core/cockpit_core.dart' show GitException, GitRunResult;
+import 'package:cockpit_core/cockpit_core.dart'
+    show GitException, GitRunResult, FileException, FileErrorKind;
 import 'package:cockpit_remote/cockpit_remote.dart'
     show RemoteGitService, RemoteRpcException, RemoteTurnStatus;
 import 'package:cockpit/app/cockpit/domain/contracts/terminal_gateway.dart';
@@ -131,6 +152,10 @@ import 'package:cockpit/app/cockpit/ui/viewmodels/remote_workspace_controller.da
 import 'package:flutter/foundation.dart';
 import 'package:flutter/scheduler.dart';
 
+import 'workspace_graph_context.dart';
+
+part 'orchestration_workspace.dart';
+
 /// Controlador do shell: projetos, árvore de splits **por projeto**, sessões de
 /// agente, foco.
 ///
@@ -141,11 +166,13 @@ import 'package:flutter/scheduler.dart';
 ///
 /// As operações de pane agem no **projeto ativo** ([_selectedProjectId]) — o
 /// `IndexedStack` garante que só o projeto ativo é interativo.
-class CockpitViewModel extends ChangeNotifier implements DocumentHost {
+class CockpitViewModel extends ChangeNotifier
+    implements DocumentHost, WorkspaceGraphContext {
   CockpitViewModel(
     this._projects,
     this._fileSystem,
     this._terminalFactory,
+    this._terminalAttachments,
     this._sidecar,
     this._terminalProfiles,
     this._fileReader,
@@ -292,6 +319,7 @@ class CockpitViewModel extends ChangeNotifier implements DocumentHost {
   final NeovimGateway _neovim;
   final FileSystemReader _fileSystem;
   final TerminalGatewayFactory _terminalFactory;
+  final TerminalAttachmentService _terminalAttachments;
 
   /// Fonte de turn-status das PTYs que nascem FORA do app (hoje: o sidecar
   /// local). O spawn continua indo pelo [_terminalFactory].
@@ -469,6 +497,678 @@ class CockpitViewModel extends ChangeNotifier implements DocumentHost {
   /// reconstruído quando selecionado). `null` = projeto sem layout salvo.
   final Map<String, Map<String, dynamic>?> _savedLayouts =
       <String, Map<String, dynamic>?>{};
+
+  final Map<String, OrchestrationSession> _orchestrations = {};
+  final Map<String, Future<void>> _orchestrationOpens = {};
+  void Function()? _detachNativeOrchestration;
+  bool _nativeDocumentsDisposed = false;
+
+  void _attachNativeOrchestration() {
+    if (_nativeDocumentsDisposed || _detachNativeOrchestration != null) return;
+    _detachNativeOrchestration = OpenFilesChannel.attachOrchestration(
+      openNativeOrchestration,
+    );
+  }
+
+  final Map<String, Future<Result<String, FileOperationError>>>
+  _orchestrationCreates = {};
+  final Map<String, Map<String, Map<String, String>>> _orchestrationBindings =
+      {};
+  final Map<String, String> _orchestrationLastTerminalPane = {};
+  final Map<String, OrchestrationPresentation> _presentations = {};
+
+  OrchestrationPresentation presentationFor(String projectId) =>
+      _presentations[projectId] ?? const OrchestrationPresentation();
+  OrchestrationPresentation get presentation => _selectedProjectId == null
+      ? const OrchestrationPresentation()
+      : presentationFor(_selectedProjectId!);
+
+  GraphBox? get selectedWorkspaceBox =>
+      graphBoxes.where((b) => b.id == presentation.selectedBoxId).firstOrNull ??
+      graphBoxes.firstOrNull;
+
+  void updatePresentation(OrchestrationPresentation value) {
+    final id = _selectedProjectId;
+    if (id == null) return;
+    final previous = presentation;
+    _presentations[id] = value;
+    // Discrete presentation changes must enter the store before window-close
+    // flushAll runs. A layout debounce alone can lose a just-dropped order.
+    if (!isSystemTerminal(id) &&
+        (previous.mode != value.mode ||
+            !listEquals(previous.boxOrder, value.boxOrder))) {
+      final doc = _serializeLayout(id);
+      if (doc.isNotEmpty) unawaited(_layoutStore.save(id, doc));
+    }
+    _scheduleSave(id);
+    notifyListeners();
+  }
+
+  void setWorkspaceView(OrchestrationViewMode mode) {
+    final id = _selectedProjectId;
+    if (id == null) return;
+    final box = selectedWorkspaceBox;
+    updatePresentation(
+      presentation.copyWith(mode: mode, selectedBoxId: box?.id),
+    );
+    if (mode == OrchestrationViewMode.graph) reconcileClaudeGraphIdentities(id);
+  }
+
+  @override
+  void selectWorkspaceBox(String boxId, {bool configure = false}) {
+    final id = _selectedProjectId;
+    if (id == null || !graphBoxes.any((b) => b.id == boxId)) return;
+    updatePresentation(
+      presentation.copyWith(
+        selectedBoxId: boxId,
+        inspectorOpen: configure ? true : null,
+      ),
+    );
+  }
+
+  void configureBoxForTab(String tabId) {
+    final terminal = session(tabId);
+    final instanceId = terminal?.owner.instanceId;
+    if (instanceId == null) return;
+    final owner = _orchestrations[instanceId];
+    final box = owner?.context.graphBoxForTab(tabId);
+    if (owner == null || box == null) return;
+    owner.context.selectWorkspaceBox(box.id, configure: true);
+  }
+
+  @override
+  void openBoxInTerminals(String boxId) {
+    final box = graphBoxes.where((b) => b.id == boxId).firstOrNull;
+    final projectId = _selectedProjectId;
+    if (box == null || projectId == null) return;
+    final paneId = leafOfTab(projectId, box.tabId ?? '');
+    if (paneId == null) return;
+    selectTab(paneId, box.tabId!);
+  }
+
+  @override
+  Future<Result<String, String>> openBoxShell(
+    String boxId, {
+    String? workspaceId,
+  }) async {
+    final pid = workspaceId ?? _selectedProjectId;
+    final box = (_graphBoxes[pid] ?? const <GraphBox>[])
+        .where((b) => b.id == boxId)
+        .firstOrNull;
+    final project = _projectById(pid);
+    if (box == null || project == null) return const Failure('Box not found');
+    final existing = session(box.tabId ?? '');
+    if (existing is TerminalSession) {
+      if (!existing.hasExited) return Success(existing.id);
+      final paneId = leafOfTab(project.id, existing.id);
+      if (paneId != null) {
+        await restartTerminal(paneId, existing.id, resumeAgent: false);
+        final restored = (_graphBoxes[project.id] ?? const <GraphBox>[])
+            .where((b) => b.id == boxId)
+            .firstOrNull;
+        return restored?.tabId == null
+            ? const Failure('Box not found')
+            : Success(restored!.tabId!);
+      }
+    }
+    return newTerminalTab(
+      workspaceId: project.id,
+      cwd: _orchestrationBoxCwd(project.id, box.id),
+      title: box.title,
+      graphBoxId: box.id,
+    );
+  }
+
+  final Map<String, List<GraphBox>> _graphBoxes = {};
+  final Map<String, ({String role, String harness})> _pendingGraphRoles = {};
+  final Map<String, VoidCallback> _graphRoleListeners = {};
+  final Map<String, Timer> _graphRoleTimers = {};
+  final Map<String, List<GraphLink>> _graphLinks = {};
+  final Map<String, List<GraphObservedLink>> _graphTraffic = {};
+  final Map<String, Map<String, String>> _graphClaudeAliases = {};
+  final Map<String, List<GraphUnresolvedPeer>> _graphUnresolvedPeers = {};
+  final ClaudeGraphIdentityResolver _graphIdentityResolver =
+      const ClaudeGraphIdentityResolver();
+  final Set<String> _graphScannedTranscripts = {};
+  final Set<String> _graphIdentityScanning = {};
+  final Set<String> _graphIdentityRescan = {};
+  final Map<String, String> _graphDiscoveredPaths = {};
+  final Set<String> _graphDiscoveryKeys = {};
+  final GraphSubagentRegistry _graphSubagents = GraphSubagentRegistry();
+
+  @override
+  List<GraphBox> get graphBoxes =>
+      List.unmodifiable(_graphBoxes[_selectedProjectId] ?? const <GraphBox>[]);
+  @override
+  List<GraphLink> get graphLinks =>
+      List.unmodifiable(_graphLinks[_selectedProjectId] ?? const <GraphLink>[]);
+  @override
+  List<GraphObservedLink> get graphTraffic => List.unmodifiable(
+    _graphTraffic[_selectedProjectId] ?? const <GraphObservedLink>[],
+  );
+  @override
+  List<GraphUnresolvedPeer> get graphUnresolvedPeers => List.unmodifiable(
+    _graphUnresolvedPeers[_selectedProjectId] ?? const <GraphUnresolvedPeer>[],
+  );
+  @override
+  List<GraphSubagent> get graphSubagents =>
+      List.unmodifiable(_graphSubagents.forProject(_selectedProjectId));
+
+  void recordGraphTraffic(String sourceTabId, String targetTabId) {
+    final source = _sessions[sourceTabId];
+    final target = _sessions[targetTabId];
+    if (source == null ||
+        target == null ||
+        source.projectId != target.projectId ||
+        sourceTabId == targetTabId) {
+      return;
+    }
+    final traffic = _graphTraffic.putIfAbsent(source.projectId, () => []);
+    traffic.removeWhere(
+      (event) => event.fromTabId == sourceTabId && event.toTabId == targetTabId,
+    );
+    traffic.add(
+      GraphObservedLink(
+        fromTabId: sourceTabId,
+        toTabId: targetTabId,
+        observedAt: DateTime.now(),
+      ),
+    );
+    notifyListeners();
+  }
+
+  void _recordClaudeGraphMessage(TerminalSession source, String address) {
+    final recipient = address.trim();
+    if (recipient.isEmpty) return;
+    final targetId =
+        _graphClaudeAliases[source.projectId]?[recipient.toLowerCase()];
+    if (targetId != null && targetId != source.id) {
+      recordGraphTraffic(source.id, targetId);
+      return;
+    }
+    final peers = _graphUnresolvedPeers.putIfAbsent(source.projectId, () => []);
+    peers.removeWhere(
+      (peer) => peer.ownerTabId == source.id && peer.address == recipient,
+    );
+    peers.add(
+      GraphUnresolvedPeer(
+        projectId: source.projectId,
+        ownerTabId: source.id,
+        address: recipient,
+        observedAt: DateTime.now(),
+      ),
+    );
+    if (peers.length > 64) peers.removeAt(0);
+    notifyListeners();
+    reconcileClaudeGraphIdentities(source.projectId);
+  }
+
+  /// Match Claude recipient addresses to the sessions already represented by
+  /// terminal boxes, including sessions restored before the hook was installed.
+  void reconcileClaudeGraphIdentities(String projectId) {
+    if (!_graphIdentityScanning.add(projectId)) {
+      _graphIdentityRescan.add(projectId);
+      return;
+    }
+    unawaited(
+      _scanClaudeGraphIdentities(projectId).whenComplete(() {
+        _graphIdentityScanning.remove(projectId);
+        if (_graphIdentityRescan.remove(projectId)) {
+          reconcileClaudeGraphIdentities(projectId);
+        }
+      }),
+    );
+  }
+
+  Future<void> _scanClaudeGraphIdentities(String projectId) async {
+    final sessions = _sessions.values
+        .whereType<TerminalSession>()
+        .where(
+          (s) =>
+              s.projectId == projectId &&
+              s.claudeSessionId != null &&
+              s.agentHarness == AgentHarness.claude,
+        )
+        .toList();
+    final missingIds = {
+      for (final s in sessions)
+        if (s.transcriptPath == null) s.claudeSessionId!,
+    };
+    if (missingIds.isNotEmpty) {
+      final discoveryKey = '$projectId:${missingIds.toList()..sort()}';
+      if (_graphDiscoveryKeys.add(discoveryKey)) {
+        final home = userHome();
+        if (home != null) {
+          _graphDiscoveredPaths.addAll(
+            await _graphIdentityResolver.findTranscripts(home, missingIds),
+          );
+        }
+      }
+    }
+    for (final session in sessions) {
+      final path =
+          session.transcriptPath ??
+          _graphDiscoveredPaths[session.claudeSessionId];
+      if (path == null || !_graphScannedTranscripts.add(path)) continue;
+      final aliases = await _graphIdentityResolver.readAliases(path);
+      if (_sessions[session.id] != session) continue;
+      for (final alias in aliases) {
+        _registerClaudeGraphIdentity(session, alias);
+      }
+    }
+  }
+
+  void _registerClaudeGraphIdentity(TerminalSession session, String address) {
+    final alias = address.trim().toLowerCase();
+    if (alias.isEmpty) return;
+    _graphClaudeAliases.putIfAbsent(session.projectId, () => {})[alias] =
+        session.id;
+    final peers = _graphUnresolvedPeers[session.projectId];
+    if (peers == null) return;
+    final resolved = [
+      for (final peer in peers)
+        if (peer.address.toLowerCase() == alias) peer,
+    ];
+    peers.removeWhere((peer) => peer.address.toLowerCase() == alias);
+    for (final peer in resolved) {
+      recordGraphTraffic(peer.ownerTabId, session.id);
+    }
+    if (resolved.isNotEmpty) notifyListeners();
+  }
+
+  @override
+  GraphBox? graphBoxForTab(String tabId) {
+    final owner = _sessions[tabId]?.projectId;
+    for (final box in _graphBoxes[owner] ?? const <GraphBox>[]) {
+      if (box.tabId == tabId) return box;
+    }
+    return null;
+  }
+
+  void _loadGraph(String projectId, Map<String, dynamic>? doc) {
+    _orchestrationBindings.putIfAbsent(projectId, () {
+      final raw = doc?['orchestrationBindings'];
+      if (raw is! Map) return {};
+      return {
+        for (final e in raw.entries)
+          if (e.key is String && e.value is Map)
+            e.key as String: {
+              for (final b in (e.value as Map).entries)
+                if (b.key is String && b.value is String)
+                  b.key as String: b.value as String,
+            },
+      };
+    });
+    _presentations.putIfAbsent(
+      projectId,
+      () => OrchestrationPresentation.fromJson(doc?['presentation']),
+    );
+    if (_graphBoxes.containsKey(projectId)) return;
+    final graph = doc?['graph'];
+    final map = graph is Map ? graph : const {};
+    _graphBoxes[projectId] = [
+      if (map['boxes'] is List)
+        for (final raw in map['boxes'] as List) ?GraphBox.fromJson(raw),
+    ];
+    _graphLinks[projectId] = [
+      if (map['links'] is List)
+        for (final raw in map['links'] as List) ?GraphLink.fromJson(raw),
+    ];
+  }
+
+  @override
+  Result<String, String> createGraphBox({
+    required String title,
+    required String role,
+    required String harness,
+    required String model,
+    required Offset position,
+  }) {
+    final project = selectedProject;
+    if (project == null) return const Failure('No workspace selected');
+    if (title.trim().isEmpty) {
+      return const Failure('Title is required');
+    }
+    if (!const {'claude', 'codex', 'pi'}.contains(harness)) {
+      return const Failure('Unsupported agent');
+    }
+    // Model IDs enter a shell command. Permit only the characters used by
+    // provider/model identifiers so a graph form cannot inject shell syntax.
+    if (model.isNotEmpty && !RegExp(r'^[a-zA-Z0-9._:/-]+$').hasMatch(model)) {
+      return const Failure('Invalid model identifier');
+    }
+    final created = newTerminalTab(
+      cwd: project.effectiveRoot,
+      title: title.trim(),
+    );
+    switch (created) {
+      case Failure(:final error):
+        return Failure(error);
+      case Success(:final value):
+        final boxes = _graphBoxes.putIfAbsent(project.id, () => []);
+        final index = boxes.indexWhere((box) => box.tabId == value);
+        boxes[index] = GraphBox(
+          id: boxes[index].id,
+          title: title.trim(),
+          role: role.trim(),
+          harness: harness,
+          model: model,
+          position: position,
+          tabId: value,
+        );
+        final modelArg = model.isEmpty ? '' : ' --model $model';
+        _typeWhenReady(value, '$harness$modelArg');
+        _queueGraphRole(value, role, harness);
+        _scheduleSave(project.id);
+        notifyListeners();
+        return Success(value);
+    }
+  }
+
+  // The graph stores the role, while the agent needs to receive it as a prompt.
+  // Wait for the configured harness to own the PTY and finish its current turn.
+  void _queueGraphRole(String tabId, String role, String harness) {
+    final session = this.session(tabId);
+    if (session is! TerminalSession || role.trim().isEmpty) return;
+    _pendingGraphRoles[tabId] = (role: role.trim(), harness: harness);
+    _graphRoleTimers.remove(tabId)?.cancel();
+    if (!_graphRoleListeners.containsKey(tabId)) {
+      void onSessionChanged() => _scheduleGraphRole(tabId);
+      _graphRoleListeners[tabId] = onSessionChanged;
+      session.addListener(onSessionChanged);
+    }
+    _scheduleGraphRole(tabId);
+  }
+
+  void _scheduleGraphRole(String tabId) {
+    final session = this.session(tabId);
+    final pending = _pendingGraphRoles[tabId];
+    if (session is! TerminalSession ||
+        pending == null ||
+        session.status != TerminalStatus.idle ||
+        !_graphHarnessMatches(session, pending.harness)) {
+      return;
+    }
+    _graphRoleTimers.putIfAbsent(
+      tabId,
+      () => Timer(const Duration(milliseconds: 900), () {
+        _graphRoleTimers.remove(tabId);
+        final current = this.session(tabId);
+        final latest = _pendingGraphRoles[tabId];
+        if (current is! TerminalSession ||
+            latest == null ||
+            current.status != TerminalStatus.idle ||
+            !_graphHarnessMatches(current, latest.harness)) {
+          return;
+        }
+        current.terminal.paste(
+          'Cockpit: sua função neste box foi definida ou atualizada. '
+          'Substitua a função anterior deste box pelo texto JSON a seguir: '
+          '${jsonEncode(latest.role)}. '
+          'Use esta função nas próximas solicitações. '
+          'Não inicie nenhuma tarefa agora; aguarde uma demanda.',
+        );
+        current.insertText('\r');
+        _clearGraphRole(tabId);
+      }),
+    );
+  }
+
+  bool _graphHarnessMatches(TerminalSession session, String harness) =>
+      switch (harness) {
+        'claude' => session.activeHarness?.name == 'claudeCode',
+        'codex' => session.activeHarness?.name == 'codex',
+        'pi' => session.activeHarness?.name == 'pi',
+        _ => false,
+      };
+
+  void _clearGraphRole(String tabId) {
+    _pendingGraphRoles.remove(tabId);
+    _graphRoleTimers.remove(tabId)?.cancel();
+    final listener = _graphRoleListeners.remove(tabId);
+    final session = this.session(tabId);
+    if (listener != null && session is TerminalSession) {
+      session.removeListener(listener);
+    }
+  }
+
+  @override
+  void moveGraphBox(String boxId, Offset position) {
+    final projectId = _selectedProjectId;
+    if (projectId == null) return;
+    final boxes = _graphBoxes[projectId];
+    if (boxes == null) return;
+    final index = boxes.indexWhere((box) => box.id == boxId);
+    if (index < 0) return;
+    boxes[index] = boxes[index].copyWith(position: position);
+    notifyListeners();
+    _scheduleSave(projectId);
+  }
+
+  @override
+  Result<String, String> configureGraphBox({
+    required String boxId,
+    String? title,
+    required String role,
+    required String harness,
+    required String model,
+  }) {
+    final projectId = _selectedProjectId;
+    if (projectId == null) return const Failure('No workspace selected');
+    final boxes = _graphBoxes[projectId];
+    final index = boxes?.indexWhere((box) => box.id == boxId) ?? -1;
+    if (boxes == null || index < 0) return const Failure('Box not found');
+    final trimmedTitle = title?.trim();
+    if (trimmedTitle != null && trimmedTitle.isEmpty) {
+      return const Failure('Title is required');
+    }
+    final trimmedRole = role.trim();
+    final normalizedHarness = harness == 'claudeCode' ? 'claude' : harness;
+    final trimmedModel = model.trim();
+    if (normalizedHarness.isNotEmpty &&
+        !const {'claude', 'codex', 'pi'}.contains(normalizedHarness)) {
+      return const Failure('Unsupported agent');
+    }
+    if (trimmedModel.isNotEmpty &&
+        !RegExp(r'^[a-zA-Z0-9._:/-]+$').hasMatch(trimmedModel)) {
+      return const Failure('Invalid model identifier');
+    }
+    final updated = boxes[index].copyWith(
+      title: trimmedTitle,
+      role: trimmedRole,
+      harness: normalizedHarness,
+      model: trimmedModel,
+    );
+    boxes[index] = updated;
+    final tabId = updated.tabId;
+    if (tabId != null && tabId.isNotEmpty) {
+      if (trimmedTitle != null) _sessions[tabId]?.setManualLabel(trimmedTitle);
+      _clearGraphRole(tabId);
+      // Configuration is passive; only an explicit CLI action sends a role.
+    }
+    notifyListeners();
+    _scheduleSave(projectId);
+    return Success(boxId);
+  }
+
+  String? _graphCliCommand(GraphBox box) {
+    final harness = box.harness == 'claudeCode' ? 'claude' : box.harness;
+    if (!const {'claude', 'codex', 'pi'}.contains(harness)) return null;
+    if (box.model.isNotEmpty &&
+        !RegExp(r'^[a-zA-Z0-9._:/-]+$').hasMatch(box.model)) {
+      return null;
+    }
+    final modelArg = box.model.isEmpty ? '' : ' --model ${box.model}';
+    return '$harness$modelArg';
+  }
+
+  @override
+  Result<String, String> relaunchGraphBox(String boxId, {String? workspaceId}) {
+    final project = _projectById(workspaceId ?? _selectedProjectId);
+    if (project == null) return const Failure('No workspace selected');
+    final boxes = _graphBoxes[project.id];
+    final index = boxes?.indexWhere((box) => box.id == boxId) ?? -1;
+    if (boxes == null || index < 0) return const Failure('Box not found');
+    final box = boxes[index];
+    final command = _graphCliCommand(box);
+    if (command == null) {
+      return const Failure('Configure Claude, Codex or Pi before starting');
+    }
+    final tabId = box.tabId;
+    final existing = tabId == null ? null : _sessions[tabId];
+    if (existing is TerminalSession && !existing.hasExited) {
+      if (_graphHarnessMatches(existing, box.harness)) {
+        return Success(existing.id);
+      }
+      if (existing.activeHarness != null) {
+        return const Failure('Another agent is already running in this tab');
+      }
+      _typeWhenReady(existing.id, command);
+      _queueGraphRole(existing.id, box.role, box.harness);
+      return Success(existing.id);
+    }
+    if (existing != null && existing is! TerminalSession) {
+      return const Failure('This box is not backed by a terminal');
+    }
+    final created = newTerminalTab(
+      workspaceId: project.id,
+      cwd: _orchestrationBoxCwd(project.id, box.id),
+      title: box.title,
+      graphBoxId: box.id,
+    );
+    switch (created) {
+      case Failure(:final error):
+        return Failure(error);
+      case Success(:final value):
+        boxes[index] = box.copyWith(tabId: value);
+        _typeWhenReady(value, command);
+        _queueGraphRole(value, box.role, box.harness);
+        notifyListeners();
+        _scheduleSave(project.id);
+        return Success(value);
+    }
+  }
+
+  /// Starts a fresh terminal for a handoff, retaining the box's stable ID and
+  /// every graph link. The previous terminal remains available as history.
+  @override
+  Result<String, String> startGraphHandoff(
+    String boxId, {
+    String? workspaceId,
+  }) {
+    final project = _projectById(workspaceId ?? _selectedProjectId);
+    if (project == null) return const Failure('No workspace selected');
+    final boxes = _graphBoxes[project.id];
+    final index = boxes?.indexWhere((box) => box.id == boxId) ?? -1;
+    if (boxes == null || index < 0) return const Failure('Box not found');
+    final box = boxes[index];
+    final command = _graphCliCommand(box);
+    if (command == null) {
+      return const Failure('Configure Claude, Codex or Pi before starting');
+    }
+    final created = newTerminalTab(
+      workspaceId: project.id,
+      cwd: project.effectiveRoot,
+      title: box.title,
+      graphBoxId: box.id,
+    );
+    switch (created) {
+      case Failure(:final error):
+        return Failure(error);
+      case Success(:final value):
+        boxes[index] = box.copyWith(tabId: value);
+        _typeWhenReady(value, command);
+        _queueGraphRole(value, box.role, box.harness);
+        notifyListeners();
+        _scheduleSave(project.id);
+        return Success(value);
+    }
+  }
+
+  @override
+  void addGraphLink(String from, String to) {
+    final projectId = _selectedProjectId;
+    if (projectId == null || from == to) return;
+    final ids = (_graphBoxes[projectId] ?? []).map((b) => b.id).toSet();
+    if (!ids.contains(from) || !ids.contains(to)) return;
+    final links = _graphLinks.putIfAbsent(projectId, () => []);
+    if (links.any((link) => link.from == from && link.to == to)) return;
+    links.add(GraphLink(from: from, to: to));
+    notifyListeners();
+    _scheduleSave(projectId);
+  }
+
+  @override
+  String ensureGraphBoxForTab(PaneItem session, Offset position) {
+    final id = _ensureGraphBoxForTab(session, position: position);
+    notifyListeners();
+    _scheduleSave(session.projectId);
+    return id;
+  }
+
+  String _ensureGraphBoxForTab(PaneItem session, {Offset? position}) {
+    final boxes = _graphBoxes.putIfAbsent(session.projectId, () => []);
+    for (final box in boxes) {
+      if (box.tabId == session.id) return box.id;
+    }
+    var slot = 0;
+    while (position == null) {
+      final candidate = Offset(
+        110.0 + (slot % 8) * 270,
+        130.0 + (slot ~/ 8) * 190,
+      );
+      if (boxes.every(
+        (box) =>
+            (box.position.dx - candidate.dx).abs() >= 270 ||
+            (box.position.dy - candidate.dy).abs() >= 190,
+      )) {
+        position = candidate;
+      }
+      slot++;
+    }
+    final box = GraphBox(
+      id: _nid('box'),
+      title: session.displayTitle,
+      role: '',
+      harness: session is TerminalSession
+          ? switch (session.activeHarness?.name) {
+              'claudeCode' => 'claude',
+              final name? => name,
+              null => '',
+            }
+          : '',
+      model: '',
+      position: position,
+      tabId: session.id,
+    );
+    boxes.add(box);
+    return box.id;
+  }
+
+  @override
+  void removeGraphLink(String from, String to) {
+    final projectId = _selectedProjectId;
+    if (projectId == null) return;
+    _graphLinks[projectId]?.removeWhere((l) => l.from == from && l.to == to);
+    notifyListeners();
+    _scheduleSave(projectId);
+  }
+
+  void removeGraphBox(String boxId) {
+    final projectId = _selectedProjectId;
+    if (projectId == null) return;
+    for (final box in _graphBoxes[projectId] ?? const <GraphBox>[]) {
+      if (box.id == boxId && box.tabId != null) {
+        _clearGraphRole(box.tabId!);
+      }
+    }
+    _graphBoxes[projectId]?.removeWhere((b) => b.id == boxId);
+    _graphLinks[projectId]?.removeWhere(
+      (l) => l.from == boxId || l.to == boxId,
+    );
+    notifyListeners();
+    _scheduleSave(projectId);
+  }
 
   /// Debounce de gravação por projeto (o resize é arrasto contínuo).
   final Map<String, Timer> _saveTimers = <String, Timer>{};
@@ -715,12 +1415,19 @@ class CockpitViewModel extends ChangeNotifier implements DocumentHost {
     _scheduleSave(rootId);
   }
 
+  @override
   String? get selectedProjectId => _selectedProjectId;
   Project? get selectedProject => _projectById(_selectedProjectId);
+  @override
+  bool get selectedRemoteDisconnected {
+    final hostId = selectedProject?.remoteHostId;
+    return hostId != null && _remoteHosts.isDisconnected(hostId);
+  }
 
   /// Título pro topbar: `"<workspace> · <worktree>"` quando um fork está
   /// selecionado (separador middle-dot U+00B7); só o nome do workspace caso
   /// contrário. `null` quando nada está selecionado.
+  @override
   String? get selectedDisplayTitle {
     final p = selectedProject;
     if (p == null) return null;
@@ -736,7 +1443,17 @@ class CockpitViewModel extends ChangeNotifier implements DocumentHost {
   bool get treeVisible => _treeVisible;
   List<LaunchableApp> get availableApps =>
       List<LaunchableApp>.unmodifiable(_availableApps);
-  PaneItem? session(String id) => _sessions[id];
+  @override
+  PaneItem? session(String id) {
+    final normal = _sessions[id];
+    if (normal != null) return normal;
+    for (final owner in _orchestrations.values) {
+      if (owner.disposed || owner.closing) continue;
+      final child = owner.terminals.session(id);
+      if (child != null) return child;
+    }
+    return null;
+  }
 
   /// Todas as sessões abertas (qualquer workspace) — usado pela CLI interna
   /// ([CockpitCliHandler]) pra list-panes/resolução por label.
@@ -1308,6 +2025,11 @@ class CockpitViewModel extends ChangeNotifier implements DocumentHost {
     int? revealLine,
     bool asSource = false,
   }) async {
+    if (!asSource && OrchestrationDocument.isFilePath(path)) {
+      final pid = _selectedProjectId;
+      if (pid != null) await openOrchestration(path, projectId: pid);
+      return null;
+    }
     final projectId = _selectedProjectId;
     final tree = _activeTree;
     final paneId = inPane ?? (projectId == null ? null : _focused[projectId]);
@@ -1798,10 +2520,20 @@ class CockpitViewModel extends ChangeNotifier implements DocumentHost {
       command.fail('$cmd is not available from a remote terminal: $refusal');
       return;
     }
+    final caller = request['callerTabId'];
+    if (caller != null && (caller is! String || caller.isEmpty)) {
+      command.fail('invalid callerTabId');
+      return;
+    }
     final tabId = request['tabId']?.toString();
     final args = (request['args'] as Map?)?.cast<String, dynamic>() ?? const {};
     final result = await _cli.handle(
-      CockpitCommand(cmd: cmd, tabId: tabId, args: args),
+      CockpitCommand(
+        cmd: cmd,
+        tabId: tabId,
+        callerTabId: caller as String?,
+        args: args,
+      ),
     );
     if (result.ok) {
       command.respond(result.data);
@@ -1820,6 +2552,12 @@ class CockpitViewModel extends ChangeNotifier implements DocumentHost {
     if (paneId == null) return null;
     final activeId = findLeaf(tree, paneId)?.active;
     final s = activeId == null ? null : _sessions[activeId];
+    if (s is OrchestrationSession) {
+      final tabId = s.terminals.keyboardTabId;
+      return s.disposed || s.closing || tabId == null
+          ? null
+          : s.terminals.session(tabId);
+    }
     return s is TerminalSession ? s : null;
   }
 
@@ -2753,9 +3491,50 @@ class CockpitViewModel extends ChangeNotifier implements DocumentHost {
   /// Funciona local e remoto: no remoto lista a pasta via `fs.list` pra achar
   /// o nome e grava via `fs.write` (o host cria a pasta-pai).
   Future<Result<String, FileOperationError>> createFromTemplate(
-    GalleryTemplate template,
-  ) async {
+    GalleryTemplate template, {
+    bool importLegacyOrchestration = false,
+  }) {
+    final pid = _selectedProjectId;
+    if (template != GalleryTemplate.orchestration || pid == null) {
+      return _createFromTemplate(
+        template,
+        importLegacyOrchestration: importLegacyOrchestration,
+      );
+    }
+    final pending = _orchestrationCreates[pid];
+    if (pending != null) return pending;
+    final operation = _createFromTemplate(
+      template,
+      importLegacyOrchestration: importLegacyOrchestration,
+    );
+    _orchestrationCreates[pid] = operation;
+    unawaited(
+      operation.then(
+        (_) {
+          _orchestrationCreates.remove(pid);
+        },
+        onError: (Object e, StackTrace st) {
+          _orchestrationCreates.remove(pid);
+        },
+      ),
+    );
+    return operation;
+  }
+
+  Future<Result<String, FileOperationError>> _createFromTemplate(
+    GalleryTemplate template, {
+    bool importLegacyOrchestration = false,
+  }) async {
     final root = treeRootPath;
+    final galleryProjectId = _selectedProjectId;
+    final seed =
+        template == GalleryTemplate.orchestration && galleryProjectId != null
+        ? _orchestrationSeed(
+            galleryProjectId,
+            importLegacy: importLegacyOrchestration,
+          )
+        : null;
+    final templateContent = seed?.encode() ?? template.content;
     if (root.isEmpty) {
       return const Failure(
         FileOperationError(FileOperationErrorKind.noWorkspace),
@@ -2800,6 +3579,9 @@ class CockpitViewModel extends ChangeNotifier implements DocumentHost {
       final existing = joinPath(dir, template.fileName);
       if (template.opensParent) {
         openNotebook(dir);
+      } else if (template == GalleryTemplate.orchestration &&
+          galleryProjectId != null) {
+        await openOrchestration(existing, projectId: galleryProjectId);
       } else {
         await openFile(existing, isPreview: false);
       }
@@ -2812,7 +3594,7 @@ class CockpitViewModel extends ChangeNotifier implements DocumentHost {
     if (host != null) {
       try {
         final service = await _remoteHosts.fileServiceFor(host);
-        await service.write(path, utf8.encode(template.content));
+        await service.write(path, utf8.encode(templateContent));
       } catch (e) {
         return Failure(
           FileOperationError(
@@ -2821,7 +3603,7 @@ class CockpitViewModel extends ChangeNotifier implements DocumentHost {
           ),
         );
       }
-    } else if (!await _fileReader.write(path, template.content)) {
+    } else if (!await _fileReader.write(path, templateContent)) {
       return const Failure(
         FileOperationError(FileOperationErrorKind.writeFailed),
       );
@@ -2831,6 +3613,17 @@ class CockpitViewModel extends ChangeNotifier implements DocumentHost {
     _bumpFileTree();
     if (template.opensParent) {
       openNotebook(dir)?.requestReload();
+    } else if (template == GalleryTemplate.orchestration &&
+        galleryProjectId != null) {
+      await openOrchestration(
+        path,
+        projectId: galleryProjectId,
+        initialBindings: {
+          for (final b in seed?.boxes ?? const <OrchestrationBox>[])
+            if (b.box.tabId != null && b.box.tabId!.isNotEmpty)
+              b.box.id: b.box.tabId!,
+        },
+      );
     } else {
       await openFile(path, isPreview: false);
     }
@@ -2938,7 +3731,17 @@ class CockpitViewModel extends ChangeNotifier implements DocumentHost {
   /// próprio arquivo e, se [from] for pasta, todos os descendentes (troca de
   /// prefixo). Re-lê o conteúdo e re-arma o watcher no novo caminho.
   Future<void> _retargetSessions(String from, String to) async {
-    for (final s in _sessions.values) {
+    for (final s in {..._sessions.values, ..._orchestrations.values}) {
+      if (s is OrchestrationSession) {
+        final previous = s.path;
+        if (s.retargetLocalFilesystem(from, to)) {
+          final bindings = _orchestrationBindings[s.projectId];
+          final old = bindings?.remove(previous);
+          if (old != null) bindings![s.path] = old;
+          _watchOrchestration(s);
+          _scheduleSave(s.projectId);
+        }
+      }
       if (s is! FileViewerSession || !_isUnder(s.path, from)) continue;
       final newPath = s.path == from
           ? to
@@ -3047,6 +3850,13 @@ class CockpitViewModel extends ChangeNotifier implements DocumentHost {
         sessionId: s.sid,
         transcriptPath: s.transcriptPath,
         harness: s.harness,
+        subagentId: s.subagentId,
+        subagentType: s.subagentType,
+        eventAt: s.eventAt,
+        contextTokens: s.contextTokens,
+        contextWindow: s.contextWindow,
+        graphRecipient: s.graphRecipient,
+        graphSelfName: s.graphSelfName,
       ),
     );
 
@@ -3137,8 +3947,12 @@ class CockpitViewModel extends ChangeNotifier implements DocumentHost {
           debugPrint(
             '[boot] falha ao ativar o workspace inicial: $error\n$stack',
           );
+        } finally {
+          _attachNativeOrchestration();
         }
       });
+    } else {
+      _attachNativeOrchestration();
     }
     // Mudanças de host/pin vindas de OUTRA rota (aba "Remote hosts" das
     // Configurações opera o mesmo RemoteHostsController) re-sincronizam a rail.
@@ -4606,6 +5420,11 @@ class CockpitViewModel extends ChangeNotifier implements DocumentHost {
   /// `git push` no repo em [repoPath].
   GitRun gitPush(String repoPath) => git.push(repoPath);
 
+  /// `git clone` de [url] em [targetPath] (fluxo "Clonar repositório" do "+").
+  /// Não registra o workspace: a action faz isso só depois do clone dar certo.
+  GitRun gitClone(String url, String targetPath) =>
+      _gitRunner.clone(url, targetPath);
+
   /// "Update from parent": mergeia a branch **do pai** (root de origem) no
   /// checkout do worktree [fork] — o inverso do [mergeWorktreeToParent].
   /// Conflito fica no worktree pro usuário resolver (exit ≠ 0 no dialog);
@@ -4718,6 +5537,14 @@ class CockpitViewModel extends ChangeNotifier implements DocumentHost {
     final s = _sessions[sessionId];
     if (s == null) return;
     s.setManualLabel(label);
+    final boxes = _graphBoxes[s.projectId];
+    if (boxes != null) {
+      for (var i = 0; i < boxes.length; i++) {
+        if (boxes[i].tabId == sessionId) {
+          boxes[i] = boxes[i].copyWith(title: label);
+        }
+      }
+    }
     if (s is FileViewerSession) unawaited(_writeKanbanBoardTitle(s, label));
     _scheduleSave(s.projectId);
     notifyListeners();
@@ -4728,6 +5555,14 @@ class CockpitViewModel extends ChangeNotifier implements DocumentHost {
     final s = _sessions[sessionId];
     if (s == null) return;
     s.clearManualLabel();
+    final boxes = _graphBoxes[s.projectId];
+    if (boxes != null) {
+      for (var i = 0; i < boxes.length; i++) {
+        if (boxes[i].tabId == sessionId) {
+          boxes[i] = boxes[i].copyWith(title: s.displayTitle);
+        }
+      }
+    }
     if (s is FileViewerSession) unawaited(_writeKanbanBoardTitle(s, null));
     _scheduleSave(s.projectId);
     notifyListeners();
@@ -4757,6 +5592,14 @@ class CockpitViewModel extends ChangeNotifier implements DocumentHost {
 
   void focus(String paneId) {
     final id = _selectedProjectId;
+    final focusedTree = id == null ? null : _trees[id];
+    final leaf = focusedTree == null ? null : findLeaf(focusedTree, paneId);
+    if (id != null &&
+        leaf != null &&
+        leaf.tabs.any((tab) => _sessions[tab] is TerminalSession) &&
+        !leaf.tabs.any((tab) => _sessions[tab] is OrchestrationSession)) {
+      _orchestrationLastTerminalPane[id] = paneId;
+    }
     if (id == null || _focused[id] == paneId) return;
     _focused[id] = paneId;
     _requestPaneKeyboard();
@@ -4804,6 +5647,13 @@ class CockpitViewModel extends ChangeNotifier implements DocumentHost {
   /// ⌘1…⌘8. No-op se o índice está fora do range (⌘5 numa pane de 3 abas não
   /// faz nada) ou se não há pane focada.
   void selectTabByIndex(int index) {
+    final owner = activeOrchestration;
+    if (owner != null) {
+      if (!owner.disposed && !owner.closing) {
+        owner.context.selectTerminalTabByIndex(index);
+      }
+      return;
+    }
     final focused = _focusedLeaf();
     if (focused == null) return;
     final (paneId, leaf) = focused;
@@ -4814,6 +5664,13 @@ class CockpitViewModel extends ChangeNotifier implements DocumentHost {
   /// Seleciona a **última** aba da pane focada — o atalho ⌘9, na convenção de
   /// browsers/iTerm ("pula pra última", não pra 9ª). No-op se a pane não tem aba.
   void selectLastTab() {
+    final owner = activeOrchestration;
+    if (owner != null) {
+      if (!owner.disposed && !owner.closing) {
+        owner.context.selectLastTerminalTab();
+      }
+      return;
+    }
     final focused = _focusedLeaf();
     if (focused == null) return;
     final (paneId, leaf) = focused;
@@ -4839,6 +5696,13 @@ class CockpitViewModel extends ChangeNotifier implements DocumentHost {
   /// No-op se há só uma pane ou não existe vizinha naquela direção (fica onde
   /// está, sem ciclar). Deriva a vizinhança da árvore via [neighborLeaf].
   void focusPaneToward(PaneMove move) {
+    final owner = activeOrchestration;
+    if (owner != null) {
+      if (!owner.disposed && !owner.closing) {
+        owner.context.focusTerminalPaneToward(move);
+      }
+      return;
+    }
     final projectId = _selectedProjectId;
     final tree = _activeTree;
     if (projectId == null || tree == null) return;
@@ -4931,13 +5795,17 @@ class CockpitViewModel extends ChangeNotifier implements DocumentHost {
     // Comando digitado no shell assim que ele sobe (ex.: `claude` no "Open in
     // Claude Code" do menu da pasta). `null` = só o shell.
     String? startupCommand,
+    String? graphBoxId,
+    String? workspaceId,
+    bool takeFocus = true,
   }) {
-    final projectId = _selectedProjectId;
-    final tree = _activeTree;
+    final projectId = workspaceId ?? _selectedProjectId;
+    final tree = projectId == null ? null : _trees[projectId];
     if (projectId == null || tree == null) {
       return const Failure('no active workspace to create the terminal in');
     }
-    final anchorId = inPane ?? _focused[projectId] ?? leaves(tree).first.id;
+    final target = inPane;
+    final anchorId = target ?? _focused[projectId] ?? leaves(tree).first.id;
     final leaf = findLeaf(tree, anchorId) ?? leaves(tree).first;
 
     final s = _buildTerminal(
@@ -4946,6 +5814,7 @@ class CockpitViewModel extends ChangeNotifier implements DocumentHost {
       cwd,
       title: title ?? _sanitizeName(_basename(cwd)),
       startupCommand: startupCommand,
+      graphBoxId: graphBoxId,
     );
     if (title != null && title.trim().isNotEmpty) {
       s.setManualLabel(title);
@@ -4956,26 +5825,30 @@ class CockpitViewModel extends ChangeNotifier implements DocumentHost {
       // se for a aba ativa — mesma regra do `newTabIn`).
       final active = _sessions[leaf.active];
       final replaceEmpty = active is EmptyTab;
-      _setActiveTree(
-        updateLeaf(tree, leaf.id, (p) {
-          if (replaceEmpty) {
-            final tabs = p.tabs
-                .map((t) => t == leaf.active ? s.id : t)
-                .toList();
-            return p.copyWith(tabs: tabs, active: s.id);
-          }
-          return p.copyWith(tabs: [...p.tabs, s.id], active: s.id);
-        }),
-      );
+      _trees[projectId] = updateLeaf(tree, leaf.id, (p) {
+        if (replaceEmpty) {
+          final tabs = p.tabs.map((t) => t == leaf.active ? s.id : t).toList();
+          return p.copyWith(tabs: tabs, active: s.id);
+        }
+        return p.copyWith(tabs: [...p.tabs, s.id], active: s.id);
+      });
       if (replaceEmpty) _disposeSession(leaf.active);
-      _focused[projectId] = leaf.id;
+      if (takeFocus) _focused[projectId] = leaf.id;
+      _orchestrationLastTerminalPane[projectId] = leaf.id;
     } else {
       final newLeaf = LeafPane(id: _nid('pane'), tabs: [s.id], active: s.id);
-      _setActiveTree(
-        splitLeaf(tree, leaf.id, splitDir, newLeaf, splitId: _nid('sp')),
+      _trees[projectId] = splitLeaf(
+        tree,
+        leaf.id,
+        splitDir,
+        newLeaf,
+        splitId: _nid('sp'),
       );
-      _focused[projectId] = newLeaf.id;
+      if (takeFocus) _focused[projectId] = newLeaf.id;
+      _orchestrationLastTerminalPane[projectId] = newLeaf.id;
     }
+    if (takeFocus) _requestPaneKeyboard();
+    _scheduleSave(projectId);
     notifyListeners();
     return Success(s.id);
   }
@@ -5217,7 +6090,7 @@ class CockpitViewModel extends ChangeNotifier implements DocumentHost {
   void _typeWhenReady(String tabId, String command) {
     unawaited(
       Future<void>.delayed(const Duration(milliseconds: 700)).then((_) {
-        final s = _sessions[tabId];
+        final s = session(tabId);
         if (s is TerminalSession) s.insertText('$command\r');
       }),
     );
@@ -5553,7 +6426,7 @@ class CockpitViewModel extends ChangeNotifier implements DocumentHost {
   }
 
   void closeTab(String paneId, String agentId) {
-    final projectId = _selectedProjectId;
+    final projectId = _sessions[agentId]?.projectId;
     if (projectId == null) return;
     _closeTabIn(projectId, paneId, agentId);
   }
@@ -5576,7 +6449,7 @@ class CockpitViewModel extends ChangeNotifier implements DocumentHost {
     final tree = _trees[projectId];
     if (tree == null) return;
     final leaf = findLeaf(tree, paneId);
-    if (leaf == null) return;
+    if (leaf == null || !leaf.tabs.contains(tabId)) return;
     final tabs = leaf.tabs.where((t) => t != tabId).toList();
     if (tabs.isEmpty) {
       if (leaves(tree).length == 1) {
@@ -5625,9 +6498,13 @@ class CockpitViewModel extends ChangeNotifier implements DocumentHost {
   /// keyed pelo id, então o State antigo (listeners do terminal velho) é
   /// descartado em vez de apontar pra um controller já disposto. O id também é
   /// o `COCKPIT_TAB_ID` do processo, que de fato é outro.
-  Future<void> restartTerminal(String paneId, String tabId) async {
+  Future<void> restartTerminal(
+    String paneId,
+    String tabId, {
+    bool resumeAgent = true,
+  }) async {
     final old = _sessions[tabId];
-    final tree = _activeTree;
+    final tree = old == null ? null : _trees[old.projectId];
     if (old is! TerminalSession || tree == null) return;
     final leaf = findLeaf(tree, paneId);
     if (leaf == null || !leaf.tabs.contains(tabId)) return;
@@ -5636,7 +6513,7 @@ class CockpitViewModel extends ChangeNotifier implements DocumentHost {
     final cwd = old.currentDirectory ?? old.workingDirectory;
     final snapshot = old.scrollbackSnapshot;
     final sid = old.claudeSessionId;
-    final startup = sid == null || sid.isEmpty
+    final startup = !resumeAgent || sid == null || sid.isEmpty
         ? null
         : old.agentHarness.resumeCommand(sid);
 
@@ -5645,6 +6522,8 @@ class CockpitViewModel extends ChangeNotifier implements DocumentHost {
       projectId,
       cwd,
       title: old.title,
+      graphBoxId: graphBoxForTab(old.id)?.id,
+      retainPreviousTerminalBox: false,
       // Mesmo formato do restore: RIS antes (limpa alt-screen residual), pop do
       // kitty depois (o push gravado no replay nunca teve o pop do processo
       // morto), prompt novo em linha fresca.
@@ -5656,14 +6535,12 @@ class CockpitViewModel extends ChangeNotifier implements DocumentHost {
     );
 
     final tabs = leaf.tabs.map((t) => t == tabId ? fresh.id : t).toList();
-    _setActiveTree(
-      updateLeaf(
-        tree,
-        paneId,
-        (p) => p.copyWith(
-          tabs: tabs,
-          active: p.active == tabId ? fresh.id : p.active,
-        ),
+    _trees[projectId] = updateLeaf(
+      tree,
+      paneId,
+      (p) => p.copyWith(
+        tabs: tabs,
+        active: p.active == tabId ? fresh.id : p.active,
       ),
     );
     _disposeSession(tabId);
@@ -5841,11 +6718,24 @@ class CockpitViewModel extends ChangeNotifier implements DocumentHost {
     String? replay,
     String? startupCommand,
     String? manualLabel,
+    String? graphBoxId,
+    OrchestrationSession? ownedBy,
+    String? ownedPane,
+    bool retainPreviousTerminalBox = true,
     // Plano 50: `null` = o padrão efetivo (o que o `+` abre hoje). A fatia 3
     // (dropdown do `+`) passa um perfil específico sem mexer no padrão global.
     TerminalProfile? profile,
     TerminalEngine? engine,
   }) {
+    if (ownedBy != null &&
+        (ownedBy.disposed ||
+            ownedBy.closing ||
+            ownedBy.projectId != projectId ||
+            !identical(_orchestrations[ownedBy.id], ownedBy))) {
+      throw StateError(
+        'Orchestration is closing or no longer owns this session',
+      );
+    }
     final openWatch = PerformanceDiagnostics.instance.enabled
         ? (Stopwatch()..start())
         : null;
@@ -5870,7 +6760,11 @@ class CockpitViewModel extends ChangeNotifier implements DocumentHost {
       };
     }
     final t = TerminalSession(
+      attachmentService: _terminalAttachments,
+      attachmentProjectRoot: _projectById(projectId)?.path ?? '',
+      attachmentsRemote: remote,
       id: id,
+      owner: ownedBy?.terminals.owner ?? const TerminalOwner.workspace(),
       projectId: projectId,
       workingDirectory: cwd,
       gateway: gateway,
@@ -5918,7 +6812,9 @@ class CockpitViewModel extends ChangeNotifier implements DocumentHost {
     );
     // claude rodando na aba reporta fim de turno via socket → mesma notificação
     // do agente (badge se não for a aba ativa; OS notification se desfocado).
-    t.onTurnFinished = () => unawaited(notifications.turnFinished(t));
+    t.onTurnFinished = ownedBy == null
+        ? () => unawaited(notifications.turnFinished(t))
+        : () => ownedBy.terminals.turnFinished(t);
     // cwd vivo (OSC 7) mudou → persiste o layout pra restaurar o shell ali.
     t.onCwdChanged = () => _scheduleSave(projectId);
     // Shell encerrou sozinho (`exit`, Ctrl-D, processo morto) e a preferência
@@ -5927,6 +6823,15 @@ class CockpitViewModel extends ChangeNotifier implements DocumentHost {
     // aba permanece (comportamento histórico).
     t.onProcessExit = () {
       if (!_closeTabOnShellExit) return;
+      if (ownedBy != null) {
+        if (!ownedBy.disposed &&
+            !ownedBy.closing &&
+            !ownedBy.closingTerminals.contains(t.id) &&
+            identical(ownedBy.terminals.session(t.id), t)) {
+          unawaited(_closeOwnedTerminal(ownedBy, t.id));
+        }
+        return;
+      }
       if (_sessions[t.id] != t) return;
       final paneId = leafOfTab(projectId, t.id);
       if (paneId == null) return;
@@ -5935,7 +6840,36 @@ class CockpitViewModel extends ChangeNotifier implements DocumentHost {
     // Restauração: re-arma a trava de nome sem notificar (aba ainda não montada).
     if (manualLabel != null) t.restoreManualLabel(manualLabel);
     built = t;
+    if (ownedBy != null) {
+      if (ownedBy.disposed || ownedBy.closing) {
+        unawaited(t.dispose());
+        throw StateError('Orchestration is closing');
+      }
+      ownedBy.terminals.attach(t, inPane: ownedPane, focus: false);
+      if (!remote) _warnTrackedWorkspaceEnv(t, projectId);
+      return t;
+    }
     _sessions[t.id] = t;
+    _loadGraph(projectId, _savedLayouts[projectId]);
+    final boxes = _graphBoxes[projectId]!;
+    final boxIndex = graphBoxId == null
+        ? -1
+        : boxes.indexWhere((box) => box.id == graphBoxId);
+    if (boxIndex >= 0) {
+      final previousTabId = boxes[boxIndex].tabId;
+      boxes[boxIndex] = boxes[boxIndex].copyWith(tabId: t.id);
+      final previous = _sessions[previousTabId];
+      if (retainPreviousTerminalBox &&
+          previous is TerminalSession &&
+          previous.id != t.id) {
+        _ensureGraphBoxForTab(previous);
+      }
+    } else {
+      _ensureGraphBoxForTab(t);
+    }
+    // Restore may take more than the save debounce. Persist migration only
+    // after all sessions and the pane tree have been restored.
+    if (_restoringCount == 0) _scheduleSave(projectId);
     if (!remote) _warnTrackedWorkspaceEnv(t, projectId);
     if (openWatch != null && _restoringCount == 0) {
       PerformanceDiagnostics.instance.record(PerfMetric.terminalOpen, {
@@ -6044,8 +6978,75 @@ class CockpitViewModel extends ChangeNotifier implements DocumentHost {
   /// Status reportado por um `claude` rodando numa aba de terminal (via o
   /// socket do [TerminalStatusServer]). Roteia pela [ClaudeStatusUpdate.paneId].
   void _onClaudeStatus(ClaudeStatusUpdate u) {
+    final scoped = session(u.paneId);
+    if (scoped is TerminalSession && !scoped.owner.isWorkspace) {
+      final owner = _orchestrations[scoped.owner.instanceId];
+      if (owner != null &&
+          !owner.closing &&
+          !owner.disposed &&
+          identical(owner.terminals.session(scoped.id), scoped)) {
+        owner.context.applyHook(u);
+      }
+      return;
+    }
     final s = _sessions[u.paneId];
     if (s is! TerminalSession) return;
+    if (u.harness == 'claude') {
+      if (u.graphSelfName case final String ownAddress
+          when ownAddress.isNotEmpty) {
+        _registerClaudeGraphIdentity(s, ownAddress);
+      }
+      if (u.graphRecipient case final String recipient
+          when recipient.isNotEmpty) {
+        _recordClaudeGraphMessage(s, recipient);
+      }
+    }
+    if (u.status == 'subagent_start') {
+      final agentId = u.subagentId;
+      if (agentId != null &&
+          agentId.isNotEmpty &&
+          _graphSubagents.start(
+            GraphSubagent(
+              projectId: s.projectId,
+              ownerTabId: s.id,
+              agentId: agentId,
+              agentType: u.subagentType?.isNotEmpty == true
+                  ? u.subagentType!
+                  : '',
+              harness: u.harness ?? s.agentHarness.wire,
+              startedAt: u.eventAt ?? DateTime.now(),
+            ),
+          )) {
+        notifyListeners();
+      }
+      return;
+    }
+    if (u.status == 'subagent_stop') {
+      final agentId = u.subagentId;
+      if (agentId != null &&
+          _graphSubagents.stop(s.id, agentId, u.eventAt ?? DateTime.now())) {
+        notifyListeners();
+      }
+      return;
+    }
+    if (u.event == 'SessionEnd') {
+      final removedChildren = _graphSubagents.clearOwner(s.id);
+      final peers = _graphUnresolvedPeers[s.projectId];
+      final before = peers?.length ?? 0;
+      peers?.removeWhere((peer) => peer.ownerTabId == s.id);
+      _graphClaudeAliases[s.projectId]?.removeWhere(
+        (_, tabId) => tabId == s.id,
+      );
+      if (removedChildren || (peers?.length ?? 0) != before) {
+        notifyListeners();
+      }
+    }
+    if (u.status == 'metric') {
+      if (u.contextTokens != null && u.contextWindow != null) {
+        s.applyGraphMetrics(u.contextTokens!, u.contextWindow!);
+      }
+      return;
+    }
     if (kDebugMode) {
       debugPrint(
         '[status] ${DateTime.now().toIso8601String().substring(11, 23)} '
@@ -6073,6 +7074,11 @@ class CockpitViewModel extends ChangeNotifier implements DocumentHost {
     // nunca chega ao disco e o restore não consegue retomar a sessão.
     if (s.claudeSessionId != hadSid && s.claudeSessionId != null) {
       _scheduleSave(s.projectId);
+    }
+    if (u.harness == 'claude' &&
+        s.claudeSessionId != null &&
+        (s.claudeSessionId != hadSid || u.transcriptPath != null)) {
+      reconcileClaudeGraphIdentities(s.projectId);
     }
   }
 
@@ -6148,23 +7154,8 @@ class CockpitViewModel extends ChangeNotifier implements DocumentHost {
   /// de scrollback é compartilhado — logs de terminal sob o `projectId` real,
   /// logs de task sob `__tasks__/<taskId>` —, mas o prune casa por nome de
   /// arquivo, então o keep-set é a união das duas chaves.
-  Set<String> _terminalIdsIn(Iterable<Map<String, dynamic>?> docs) {
-    final ids = <String>{};
-    for (final doc in docs) {
-      if (doc == null) continue;
-      final sessions = doc['sessions'];
-      if (sessions is! Map) continue;
-      sessions.forEach((key, desc) {
-        if (desc is! Map) return;
-        if (desc['type'] == 'terminal' && key is String) {
-          ids.add(key);
-        } else if (desc['type'] == 'task_output' && desc['taskId'] is String) {
-          ids.add(desc['taskId'] as String);
-        }
-      });
-    }
-    return ids;
-  }
+  Set<String> _terminalIdsIn(Iterable<Map<String, dynamic>?> docs) =>
+      layoutScrollbackKeys(docs);
 
   /// [_disposeSession] com a destruição adiada pro fim do frame, para quem
   /// fecha a aba com a view dela ainda montada (ver [_closeTabIn]). A sessão
@@ -6174,17 +7165,42 @@ class CockpitViewModel extends ChangeNotifier implements DocumentHost {
   Future<void> _disposeSessionAfterFrame(String id) async {
     final session = _detachSession(id);
     await _endOfFrame();
-    session?.dispose();
+    if (session is OrchestrationSession) {
+      await session.dispose();
+    } else {
+      session?.dispose();
+    }
   }
 
-  void _disposeSession(String id) => _detachSession(id)?.dispose();
+  // A tree update removes the pane immediately, but Flutter detaches the
+  // TerminalView at the end of the frame. Keep Ghostty alive until then.
+  void _disposeSession(String id) => unawaited(_disposeSessionAfterFrame(id));
 
   /// Tira a sessão [id] do registro (com o que está pendurado nela) e a
   /// devolve, sem destruir.
   PaneItem? _detachSession(String id) {
+    final orchestrationItem = _sessions[id];
+    if (orchestrationItem is OrchestrationSession) {
+      for (final child in orchestrationItem.terminals.sessions.values) {
+        _clearGraphRole(child.id);
+      }
+      _orchestrations.removeWhere(
+        (_, owner) => identical(owner, orchestrationItem),
+      );
+    }
+    _clearGraphRole(id);
+    _graphSubagents.clearOwner(id);
     _fileWatchers.remove(id)?.cancel();
     _fileWatchSeq.remove(id);
     final s = _sessions.remove(id);
+    if (s != null) {
+      final boxes = _graphBoxes[s.projectId];
+      if (boxes != null) {
+        for (var i = 0; i < boxes.length; i++) {
+          if (boxes[i].tabId == id) boxes[i] = boxes[i].copyWith(tabId: '');
+        }
+      }
+    }
     // Aba fechada explicitamente → descarta o scrollback persistido (só abas de
     // terminal têm). O app-quit NÃO passa por aqui (chama `s.dispose()` direto em
     // `dispose()`), então o registro sobrevive pra restaurar — que é o objetivo.
@@ -6265,6 +7281,7 @@ class CockpitViewModel extends ChangeNotifier implements DocumentHost {
       _savedLayouts[id] = await _layoutStore.load(id);
     }
     final doc = _savedLayouts[id];
+    _loadGraph(id, doc);
     if (doc == null) {
       _initTree(id); // síncrono — pane vazia padrão
       // NOTIFICAR É OBRIGATÓRIO AQUI, e não só no caminho de restore abaixo.
@@ -6287,6 +7304,11 @@ class CockpitViewModel extends ChangeNotifier implements DocumentHost {
     } finally {
       _restoringCount--;
     }
+    for (final owner
+        in _orchestrations.values.where((o) => o.projectId == id).toList()) {
+      await owner.controller.load();
+    }
+    _scheduleSave(id);
     notifyListeners();
   }
 
@@ -6315,7 +7337,10 @@ class CockpitViewModel extends ChangeNotifier implements DocumentHost {
         const <String, dynamic>{};
     var tree = paneNodeFromJson(treeJson.cast<String, dynamic>());
     // ANTES de gerar id novo: `_nid` não pode colidir com os que vêm do disco.
-    _bumpSeqPast(sessionsJson.keys, tree);
+    _bumpSeqPast([
+      ...sessionsJson.keys,
+      for (final box in _graphBoxes[id] ?? const <GraphBox>[]) box.id,
+    ], tree);
 
     // Colisão entre workspaces: `_sessions` é um mapa GLOBAL, mas cada layout
     // guarda os ids da sua época (t3, t4...). Um workspace restaurado depois
@@ -6339,6 +7364,19 @@ class CockpitViewModel extends ChangeNotifier implements DocumentHost {
         for (final e in sessionsJson.entries) remap[e.key] ?? e.key: e.value,
       };
       tree = _remapTabs(tree, remap);
+      for (final bindings
+          in _orchestrationBindings[id]?.values ?? <Map<String, String>>[]) {
+        for (final key in bindings.keys.toList()) {
+          bindings[key] = remap[bindings[key]] ?? bindings[key]!;
+        }
+      }
+      final boxes = _graphBoxes[id];
+      if (boxes != null) {
+        for (var i = 0; i < boxes.length; i++) {
+          final tabId = remap[boxes[i].tabId];
+          if (tabId != null) boxes[i] = boxes[i].copyWith(tabId: tabId);
+        }
+      }
     }
 
     // Recria cada sessão (agente boota e reanexa; viewer re-lê o arquivo).
@@ -6351,7 +7389,12 @@ class CockpitViewModel extends ChangeNotifier implements DocumentHost {
       // do workspace: o PTY falhava no spawn e não havia mais volta sem editar
       // o `projects.json` na mão. Falhou, a aba é descartada no sanitize.
       try {
-        if (await _restoreSession(entry.key, desc, project)) {
+        if (await _restoreSession(
+          entry.key,
+          desc,
+          project,
+          reservedIds: sessionsJson.keys.toSet(),
+        )) {
           created.add(entry.key);
         }
       } catch (error, stack) {
@@ -6376,8 +7419,15 @@ class CockpitViewModel extends ChangeNotifier implements DocumentHost {
   Future<bool> _restoreSession(
     String id,
     Map<String, dynamic> desc,
-    Project project,
-  ) async {
+    Project project, {
+    OrchestrationSession? ownedBy,
+    Set<String> reservedIds = const {},
+  }) async {
+    if (ownedBy != null && desc['type'] != 'terminal') {
+      throw const FormatException(
+        'An orchestration can restore only terminals',
+      );
+    }
     String cwdOf() {
       final sub = desc['sub'] as String? ?? '';
       return sub.isEmpty ? project.path : '${project.path}/$sub';
@@ -6472,11 +7522,12 @@ class CockpitViewModel extends ChangeNotifier implements DocumentHost {
         // cwd vivo salvo (OSC 7, absoluto) vence o `sub` — restaura onde o
         // usuário parou, mesmo fora do projeto.
         final termCwd = desc['cwd'] as String? ?? cwdOf();
-        _buildTerminal(
+        final restoredTerminal = _buildTerminal(
           id,
           project.id,
           termCwd,
           title: desc['title'] as String?,
+          ownedBy: ownedBy,
           replay: raw == null ? null : 'c$raw\x1b[<9u\r\n',
           startupCommand: claudeSid == null || claudeSid.isEmpty
               ? null
@@ -6490,6 +7541,13 @@ class CockpitViewModel extends ChangeNotifier implements DocumentHost {
             TerminalEngine.xterm,
           ),
         );
+        if (ownedBy != null && claudeSid != null && claudeSid.isNotEmpty) {
+          // Retain local restoration identity before the first startup hook;
+          // an early layout flush must not erase the saved conversation.
+          restoredTerminal.claudeSessionId = claudeSid;
+          restoredTerminal.agentHarness = harness;
+          restoredTerminal.transcriptPath = desc['transcriptPath'] as String?;
+        }
         return true;
       case 'viewer':
         final path = desc['path'] as String?;
@@ -6545,6 +7603,18 @@ class CockpitViewModel extends ChangeNotifier implements DocumentHost {
           collection: mColl,
           workingDirectory: project.path,
         );
+        return true;
+      case 'orchestration':
+        final file = desc['path'] as String?;
+        if (file == null) return false;
+        final owner = _makeOrchestration(
+          project.id,
+          file,
+          id: id,
+          startWatching: false,
+        );
+        owner.pendingRestoration = Map<String, dynamic>.from(desc);
+        _prepareOrchestrationRestore(owner, project, reservedIds);
         return true;
       case 'notebook':
         final nbPath = desc['path'] as String?;
@@ -6692,6 +7762,17 @@ class CockpitViewModel extends ChangeNotifier implements DocumentHost {
       // Toggle de worktrees do rail (V37) — mora no mesmo doc do layout, então
       // sobrevive à sessão sem inventar outro store.
       kWorktreesExpandedKey: worktreesExpanded(projectId),
+      'presentation': presentationFor(projectId).toJson(),
+      'graph': {
+        'boxes': [
+          for (final box in _graphBoxes[projectId] ?? const <GraphBox>[])
+            box.toJson(),
+        ],
+        'links': [
+          for (final link in _graphLinks[projectId] ?? const <GraphLink>[])
+            link.toJson(),
+        ],
+      },
     };
   }
 
@@ -6716,7 +7797,8 @@ class CockpitViewModel extends ChangeNotifier implements DocumentHost {
     for (final entry in sessionsJson.entries) {
       final desc = Map<String, dynamic>.from(entry.value as Map);
       // worktree não replica viewers/diffs nem a instância de editor do pai.
-      if (desc['type'] == 'viewer' ||
+      if (desc['type'] == 'orchestration' ||
+          desc['type'] == 'viewer' ||
           desc['type'] == 'diff' ||
           desc['type'] == 'neovim' ||
           desc['type'] == 'file_engine') {
@@ -6799,6 +7881,8 @@ class CockpitViewModel extends ChangeNotifier implements DocumentHost {
         'sub': relativeUnder(s.workingDirectory, project.path),
         'title': s.title,
         'engine': s.terminal.engine.name,
+        if (!s.owner.isWorkspace && s.transcriptPath != null)
+          'transcriptPath': s.transcriptPath,
         // Rótulo manual travado (se houver): persiste com o descritor da aba,
         // que no restore é re-hidratado pela mesma chave de sessão → o nome
         // estável sobrevive ao reinício e à re-emissão de OSC-title do shell.
@@ -6852,6 +7936,33 @@ class CockpitViewModel extends ChangeNotifier implements DocumentHost {
     }
     if (s is BrowserSession) {
       return <String, dynamic>{'type': 'browser', 'url': s.url};
+    }
+    if (s is OrchestrationSession) {
+      final pending = s.pendingRestoration;
+      if (pending != null) {
+        return {...pending, 'path': s.path};
+      }
+      return <String, dynamic>{
+        'type': 'orchestration',
+        'ownershipVersion': 2,
+        'path': s.path,
+        if (s.ownershipMigration != null)
+          'ownershipMigration': s.ownershipMigration,
+        'presentation': s.context.presentation.toJson(),
+        'bindings': {...s.controller.bindings},
+        'dirty': s.controller.dirty,
+        if (s.controller.pendingRemovals.isNotEmpty)
+          'pendingRemovals': OrchestrationDocument(
+            boxes: s.controller.pendingRemovals.values.toList(),
+          ).encode(),
+        'multiplexer': s.terminals.serialize(),
+        if (s.controller.document != null)
+          'document': s.controller.document!.encode(),
+        'sessions': {
+          for (final child in s.terminals.sessions.values)
+            child.id: _sessionToJson(child, project),
+        },
+      };
     }
     if (s is NotebookSession) {
       return <String, dynamic>{'type': 'notebook', 'path': s.path};
@@ -7090,6 +8201,9 @@ class CockpitViewModel extends ChangeNotifier implements DocumentHost {
 
   @override
   void dispose() {
+    _nativeDocumentsDisposed = true;
+    _detachNativeOrchestration?.call();
+    _detachNativeOrchestration = null;
     _remoteHosts.removeListener(_onRemoteHostsChanged);
     unawaited(_statusServer.stop());
     unawaited(_previewSub?.cancel());
@@ -7107,10 +8221,16 @@ class CockpitViewModel extends ChangeNotifier implements DocumentHost {
       t.cancel();
     }
     _saveTimers.clear();
+    for (final app in _orchestrations.values) {
+      if (!_sessions.containsKey(app.id)) app.dispose();
+    }
     for (final w in _fileWatchers.values) {
       w.cancel();
     }
     _fileWatchers.clear();
+    for (final tabId in _graphRoleListeners.keys.toList()) {
+      _clearGraphRole(tabId);
+    }
     // Grava o output pendente das tasks antes de sair (o debounce de 1s do
     // `TaskTerminalStore` pode não ter disparado) → o restore reabre a aba.
     unawaited(_taskTerminals.flushAll());
