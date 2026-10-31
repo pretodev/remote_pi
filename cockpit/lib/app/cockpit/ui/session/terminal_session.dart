@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:cockpit/app/cockpit/domain/contracts/terminal_attachments.dart';
 import 'package:cockpit/app/cockpit/domain/services/terminal_attachment_service.dart';
 import 'package:cockpit/app/cockpit/domain/contracts/terminal_gateway.dart';
+import 'package:cockpit/app/cockpit/domain/entities/process_metrics_snapshot.dart';
 import 'package:cockpit/app/cockpit/domain/contracts/terminal_scrollback_store.dart';
 import 'package:cockpit/app/cockpit/domain/contracts/terminal_status_server.dart';
 import 'package:cockpit/app/core/data/diagnostics/performance_diagnostics.dart';
@@ -35,6 +36,7 @@ enum TerminalStatus { idle, working, waiting }
 class TerminalSession extends PaneItem {
   TerminalSession({
     required this.id,
+    this.owner = const TerminalOwner.workspace(),
     required this.projectId,
     required this.workingDirectory,
     required this._gateway,
@@ -140,7 +142,11 @@ class TerminalSession extends PaneItem {
             // Fim do stream = processo encerrado (o PTY local fecha a porta no
             // exit; o sidecar fecha no `PtyExitEvent`). No `dispose` fomos nós
             // que matamos — aí não é notícia pra ninguém.
-            if (!_disposed) onProcessExit?.call();
+            if (!_disposed) {
+              _processEnded = true;
+              notifyListeners();
+              onProcessExit?.call();
+            }
           },
         );
     terminal.onOutput = (data) {
@@ -206,6 +212,8 @@ class TerminalSession extends PaneItem {
   VoidCallback? onProcessExit;
 
   bool _disposed = false;
+  bool _processEnded = false;
+  bool get hasExited => _processEnded;
 
   int? _viewportColumns;
   int? _viewportRows;
@@ -241,7 +249,33 @@ class TerminalSession extends PaneItem {
   TerminalStatus get status => _status;
 
   HarnessKind? _activeHarness;
-  HarnessKind? get activeHarness => _activeHarness;
+  HarnessKind? _remoteHookHarness;
+  HarnessKind? get activeHarness => _activeHarness ?? _remoteHookHarness;
+
+  /// A remote PID cannot be probed in this client's namespace. An owned
+  /// terminal's own hook can supply identity without inventing it from config.
+  void observeRemoteHookHarness(AgentHarness? harness) {
+    if (!attachmentsRemote) return;
+    final next = switch (harness) {
+      AgentHarness.claude => HarnessKind.claudeCode,
+      AgentHarness.codex => HarnessKind.codex,
+      AgentHarness.pi => HarnessKind.pi,
+      null => null,
+    };
+    if (_remoteHookHarness == next) return;
+    _remoteHookHarness = next;
+    notifyListeners();
+  }
+
+  /// PID do shell/PTY local. Ausente quando o terminal roda em host remoto.
+  int? get rootProcessId => _gateway.rootProcessId;
+  bool get processMetricsAreRemote => _gateway is RemoteProcessMetricsGateway;
+  Future<ProcessMetricsSnapshot> readRemoteProcessMetrics() =>
+      (_gateway as RemoteProcessMetricsGateway).readRemoteProcessMetrics();
+
+  /// Linux PID in the selected WSL distro. Never inferred from the Windows
+  /// `wsl.exe` PID because the two namespaces are unrelated.
+  int? get wslProcessId => _gateway.wslProcessId;
 
   /// `true` enquanto o harness está processando um turno (acende o spinner).
   @override
@@ -250,12 +284,35 @@ class TerminalSession extends PaneItem {
   /// Perfil que subiu esta aba (login shell, PowerShell, `Ubuntu (WSL)`…).
   /// Guardado pra fatia 3 (dropdown do `+`) e pra restauração da aba no perfil
   /// em que ela nasceu.
+  @override
+  final TerminalOwner owner;
+
   final TerminalProfile profile;
 
   /// Session-id e transcript do agente rodando nesta aba, capturados dos hooks.
   /// Servem pra retomar a sessão no restore da aba e pra ler o `.jsonl`.
   String? claudeSessionId;
   String? transcriptPath;
+
+  int? reportedContextTokens;
+  int? reportedContextWindow;
+  DateTime? reportedContextAt;
+
+  void clearGraphMetrics() {
+    if (reportedContextAt == null) return;
+    reportedContextTokens = null;
+    reportedContextWindow = null;
+    reportedContextAt = null;
+    notifyListeners();
+  }
+
+  void applyGraphMetrics(int tokens, int window) {
+    if (tokens < 0 || window <= 0) return;
+    reportedContextTokens = tokens;
+    reportedContextWindow = window;
+    reportedContextAt = DateTime.now();
+    notifyListeners();
+  }
 
   /// Qual harness emitiu o [claudeSessionId]. Sem isso o restore montaria
   /// sempre `claude --resume <id>` — que falha com "No conversation found" se o
@@ -478,7 +535,11 @@ class TerminalSession extends PaneItem {
 
   void _reportAttachment(TerminalAttachmentFeedback feedback) {
     if (_disposed) return;
-    attachmentFeedback = feedback;
+    // A native image paste shows up in the agent's own prompt, so a banner
+    // saying so is noise. Clear any "importing" status instead.
+    attachmentFeedback = feedback.notice == TerminalAttachmentNotice.nativeImage
+        ? null
+        : feedback;
     if (kDebugMode && feedback.notice != TerminalAttachmentNotice.importing) {
       DiagnosticsLog.instance.log(
         'terminal-attachments',
@@ -651,6 +712,25 @@ class TerminalSession extends PaneItem {
     );
   }
 
+  Future<void>? _stopProcess;
+
+  /// Stop without disposing the controller while its view is mounted. The
+  /// owning app can abort closing on failure and safely retry later.
+  Future<void> stopProcess() {
+    final pending = _stopProcess;
+    if (pending != null) return pending;
+    late final Future<void> operation;
+    operation = Future<void>.sync(_gateway.kill).catchError((
+      Object e,
+      StackTrace st,
+    ) {
+      if (identical(_stopProcess, operation)) _stopProcess = null;
+      Error.throwWithStackTrace(e, st);
+    });
+    _stopProcess = operation;
+    return operation;
+  }
+
   @override
   Future<void> dispose() async {
     _disposed = true;
@@ -667,7 +747,7 @@ class TerminalSession extends PaneItem {
     ); // best-effort: persiste o estado final (inclui app-quit).
     await _sub?.cancel();
     _coalescer.dispose();
-    await _gateway.kill();
+    await stopProcess();
     terminal.dispose();
     super.dispose();
   }

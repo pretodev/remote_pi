@@ -1,5 +1,9 @@
+import 'stable_tab_stack.dart';
+import 'orchestration_view.dart';
+import '../../domain/entities/orchestration_document.dart';
+import '../session/orchestration_session.dart';
 import 'package:desktop_drop/desktop_drop.dart';
-import 'terminal_attachment_drop_target.dart';
+import 'terminal_session_view.dart';
 import 'dart:async';
 import 'dart:io';
 import 'dart:math';
@@ -56,7 +60,6 @@ import 'package:flutter/services.dart';
 import 'package:flutter_modular/flutter_modular.dart';
 import 'package:material_symbols_icons/symbols.dart';
 import 'package:shadcn_flutter/shadcn_flutter.dart';
-import 'package:window_manager/window_manager.dart';
 
 /// Folha do multiplexador: tab strip + corpo (agente: transcript+composer / empty;
 /// terminal: TerminalView). O foco aparece **só na aba ativa**.
@@ -70,8 +73,10 @@ class PaneView extends StatelessWidget {
     required this.onCreateTab,
     required this.onSplit,
     required this.onFillEmpty,
+    this.detachedBody = false,
   });
 
+  final bool detachedBody;
   final LeafPane pane;
   final CockpitViewModel vm;
   final bool focused;
@@ -122,7 +127,7 @@ class PaneView extends StatelessWidget {
               onSplit: onSplit,
             ),
             Expanded(
-              child: tabs.isEmpty
+              child: detachedBody || tabs.isEmpty
                   ? const SizedBox.shrink()
                   // IndexedStack mantém TODAS as abas montadas e só pinta a
                   // ativa. Sem isso, trocar de aba remove o _PaneBody da anterior
@@ -130,9 +135,8 @@ class PaneView extends StatelessWidget {
                   // *view*: scroll do transcript, viewport/seleção do terminal,
                   // foco e o rascunho digitado no composer. (As sessões/dados já
                   // persistem na VM; aqui preservamos a apresentação.)
-                  : IndexedStack(
+                  : StableTabStack(
                       index: activeIndex,
-                      sizing: StackFit.expand,
                       children: [
                         for (final id in tabs)
                           _keyedBody(id, shown: tabs[activeIndex]),
@@ -149,21 +153,37 @@ class PaneView extends StatelessWidget {
   /// troca e reordenação de abas. Só a aba ativa recebe `focused`; do contrário
   /// vários terminais montados disputariam o foco do teclado.
   Widget _keyedBody(String tabId, {required String shown}) {
-    final session = vm.session(tabId);
-    if (session == null) return SizedBox.shrink(key: ValueKey('body-$tabId'));
-    return _PaneBody(
-      key: ValueKey('body-$tabId'),
-      item: session,
+    return buildPaneTabBody(
+      vm: vm,
       paneId: pane.id,
-      // Compara com a aba efetivamente exibida (índice resolvido), não com o
-      // `active` cru: um id transitoriamente inválido nunca deixa a pane
-      // inteira inativa (terminal em branco).
+      tabId: tabId,
       focused: active && focused && tabId == shown,
       active: active && tabId == shown,
-      focusGen: vm.tabFocusGen,
       onFillEmpty: () => onFillEmpty(tabId),
     );
   }
+}
+
+/// The workspace host owns tab bodies independently of their current dock.
+Widget buildPaneTabBody({
+  required CockpitViewModel vm,
+  required String paneId,
+  required String tabId,
+  required bool focused,
+  required bool active,
+  required VoidCallback onFillEmpty,
+}) {
+  final session = vm.session(tabId);
+  if (session == null) return SizedBox.shrink(key: ValueKey('body-$tabId'));
+  return _PaneBody(
+    key: ValueKey('body-$tabId'),
+    item: session,
+    paneId: paneId,
+    focused: focused,
+    active: active,
+    focusGen: vm.tabFocusGen,
+    onFillEmpty: onFillEmpty,
+  );
 }
 
 /// Largura fixa de uma aba — também usada pra calcular o auto-scroll do ativo.
@@ -757,6 +777,7 @@ class _TabState extends State<_Tab> {
     if (s == null) return;
     final viewer = s is FileViewerSession ? s : null;
     final notebook = s is NotebookSession ? s : null;
+    final orchestration = s is OrchestrationSession ? s : null;
     final isPreview = viewer?.isPreview ?? false;
     final terminal = s is TerminalSession ? s : null;
     // Janela de documento: desktop e workspace local (ver `canOpenInWindow`).
@@ -828,9 +849,27 @@ class _TabState extends State<_Tab> {
                   : Icons.code_outlined,
             ),
         ],
+        if (orchestration != null)
+          AppMenuItem(
+            value: 'orc-source',
+            label: tr.openAsJson,
+            icon: Icons.code_outlined,
+          ),
+        if (viewer != null && OrchestrationDocument.isFilePath(viewer.path))
+          AppMenuItem(
+            value: 'orc-preview',
+            label: tr.openAsOrchestration,
+            icon: Icons.account_tree_outlined,
+          ),
         // Só em abas de terminal: o id (pane id) copiável pra usar na CLI
         // `cockpit` (`--tab-id`).
         if (terminal != null) ...[
+          if (!terminal.owner.isWorkspace)
+            AppMenuItem(
+              value: 'configure-box',
+              label: context.t.workspaceView.configure,
+              icon: Icons.settings_outlined,
+            ),
           AppMenuItem(
             value: 'rename',
             label: tr.rename,
@@ -886,6 +925,10 @@ class _TabState extends State<_Tab> {
     );
     if (!mounted) return;
     switch (value) {
+      case 'configure-box':
+        if (terminal != null) {
+          context.read<CockpitViewModel>().configureBoxForTab(terminal.id);
+        }
       case 'pin':
         if (viewer != null) viewer.pin();
       case 'open-window':
@@ -897,6 +940,19 @@ class _TabState extends State<_Tab> {
       case 'copy-id':
         if (terminal != null) {
           await Clipboard.setData(ClipboardData(text: terminal.id));
+        }
+      case 'orc-source':
+        if (orchestration != null) {
+          await context.read<CockpitViewModel>().openFileAsSource(
+            orchestration.path,
+          );
+        }
+      case 'orc-preview':
+        if (viewer != null) {
+          await context.read<CockpitViewModel>().openOrchestration(
+            viewer.path,
+            projectId: viewer.projectId,
+          );
         }
       case 'raw-source':
         viewer?.toggleRawSource();
@@ -1514,35 +1570,19 @@ class _PaneBodyState extends State<_PaneBody> {
   /// `onFillEmpty` a cada build.
   String? _autoTerminalFor;
 
-  /// Tabs que usam um `TerminalPane` e portanto querem foco de teclado quando
-  /// ativas. Inclui a aba de logs de task ([TaskOutputSession]) — mesmo sendo
-  /// read-only, ela precisa do foco pra que o atalho de **copiar** (Cmd/Ctrl+C,
-  /// roteado pelo `ShortcutManager` interno do terminal) chegue ao handler.
-  /// Sem foco, dava pra selecionar (gesto de ponteiro) mas não copiar.
-  bool get _wantsTerminalFocus =>
-      widget.item is TerminalSession || widget.item is TaskOutputSession;
+  /// Task logs keep their read-only focus here so Cmd/Ctrl+C reaches the
+  /// terminal. Interactive sessions own their focus in TerminalSessionView.
+  bool get _wantsTerminalFocus => widget.item is TaskOutputSession;
 
   @override
   void initState() {
     super.initState();
-    if (widget.item case final TerminalSession session) {
-      session.setVisible(widget.active);
-    }
     if (_wantsTerminalFocus && widget.focused) _requestTerminalFocusSoon();
   }
 
   @override
   void didUpdateWidget(_PaneBody old) {
     super.didUpdateWidget(old);
-    if (widget.item case final TerminalSession session) {
-      if (old.item != widget.item || old.active != widget.active) {
-        if (old.item case final TerminalSession oldSession
-            when oldSession != session) {
-          oldSession.setVisible(false);
-        }
-        session.setVisible(widget.active);
-      }
-    }
     if (!_wantsTerminalFocus) return;
     if (widget.focused && (!old.focused || widget.focusGen != old.focusGen)) {
       // Também re-pede o foco quando só a *geração* mudou: clicar na aba que
@@ -1569,21 +1609,6 @@ class _PaneBodyState extends State<_PaneBody> {
       if (!mounted || !widget.focused || !_wantsTerminalFocus) return;
       _terminalFocus.requestFocus();
     });
-  }
-
-  /// Drop nativo de arquivo no terminal: o caminho entrou, mas o teclado não
-  /// voltava. Dois motivos, nenhum coberto pelos caminhos de foco existentes:
-  /// (1) o drag veio de outro app (Finder/Explorer), então a janela do Cockpit
-  /// deixou de ser a *key window* e o SO não a reativa ao soltar; (2) soltar
-  /// não gera pointer-down, então nem o `Listener` do pane nem o
-  /// [_grantsKeyboardOnPointerDown] rodam. O usuário tinha que clicar de novo
-  /// antes de digitar. Aqui: janela de volta ao primeiro plano, pane focado na
-  /// VM (bumpa a geração) e o node do terminal re-pedido no pós-frame.
-  void _onFileDropped() {
-    if (!_wantsTerminalFocus) return;
-    if (!isMobilePlatform) unawaited(windowManager.focus());
-    context.read<CockpitViewModel>().focus(widget.paneId);
-    _requestTerminalFocusSoon();
   }
 
   /// Envolve o terminal num [Listener] que **devolve o teclado ao próprio
@@ -1616,9 +1641,6 @@ class _PaneBodyState extends State<_PaneBody> {
 
   @override
   void dispose() {
-    if (widget.item case final TerminalSession session) {
-      session.setVisible(false);
-    }
     _terminalFocus.dispose();
     super.dispose();
   }
@@ -1627,7 +1649,16 @@ class _PaneBodyState extends State<_PaneBody> {
   Widget build(BuildContext context) {
     final item = widget.item;
 
-    // Viewer de diff read-only: comparação com o HEAD do git.
+    if (item is OrchestrationSession) {
+      return OrchestrationView(
+        session: item,
+        active: widget.active,
+        focused: widget.focused,
+        onEditSource: () =>
+            context.read<CockpitViewModel>().openFileAsSource(item.path),
+      );
+    }
+    // Viewer de diff (read-only, split): comparação com o HEAD do git.
     if (item is DiffViewerSession) {
       final vm = context.read<CockpitViewModel>();
       return DiffViewer(
@@ -1847,58 +1878,19 @@ class _PaneBodyState extends State<_PaneBody> {
     }
 
     if (item is TerminalSession) {
-      final settings = context.watch<SettingsController>().settings;
-      final termFont = settings.terminalFont;
-      // Fonte exclusiva do terminal (vazia = mono padrão do xterm); tamanho =
-      // "tamanho do código". O zoom da interface NÃO entra aqui de propósito:
-      // o pane do terminal desfaz o zoom geométrico e o reaplica como tamanho
-      // de fonte (ver `_UnzoomBox` em adaptive_terminal_pane.dart), senão o
-      // atlas de glifos do flterm seria ampliado como bitmap.
-      final termSize = settings.terminalSize ?? settings.codeSize;
-      final termStyle = (termFont == null || termFont.isEmpty)
-          ? TerminalStyle(fontSize: termSize)
-          : TerminalStyle(fontSize: termSize, fontFamily: termFont);
-      return _grantsKeyboardOnPointerDown(
-        TerminalAttachmentDropTarget(
-          session: item,
-          active: widget.active,
-          onDropped: _onFileDropped,
-          child: ColoredBox(
-            color: context.colors.panel,
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(10, 8, 0, 8),
-              child: AdaptiveTerminalPane(
-                terminal: item.terminal,
-                active: widget.active,
-                focusNode: _terminalFocus,
-                onPaste: item.pasteFromClipboard,
-                // Cmd+clique num caminho de arquivo do buffer → abre no
-                // FileViewer, resolvido contra o cwd vivo do shell (OSC 7).
-                //
-                // O fallback pro cwd de spawn não é zelo: **OSC 7 é opcional**.
-                // O zsh do macOS só o emite quando `$TERM_PROGRAM` é
-                // `Apple_Terminal`, então numa aba do Cockpit ele não vem, e
-                // `currentDirectory` fica `null` até nunca. Com `null`, o
-                // resolver desiste de todo caminho **relativo** e o clique não
-                // faz nada — sem erro, sem aviso. Absoluto abria, relativo não,
-                // e relativo é justamente o que `dart analyze` e `flutter test`
-                // imprimem.
-                //
-                // O cwd de spawn erra depois de um `cd` sem OSC 7, mas acerta o
-                // caso comum (rodar o comando na raiz da aba). Errar às vezes é
-                // melhor que não abrir nunca.
-                onOpenFile: (path, {line}) =>
-                    context.read<CockpitViewModel>().openTerminalPath(
-                      path,
-                      cwd: item.currentDirectory ?? item.workingDirectory,
-                      line: line,
-                    ),
-                theme: context.terminalTheme,
-                textStyle: termStyle,
-              ),
+      return TerminalSessionView(
+        key: ValueKey(item.id),
+        session: item,
+        active: widget.active,
+        focused: widget.focused,
+        focusRevision: widget.focusGen,
+        onFocus: () => context.read<CockpitViewModel>().focus(widget.paneId),
+        onOpenFile: (path, {line}) =>
+            context.read<CockpitViewModel>().openTerminalPath(
+              path,
+              cwd: item.currentDirectory ?? item.workingDirectory,
+              line: line,
             ),
-          ),
-        ),
       );
     }
 
@@ -2041,8 +2033,10 @@ class PaneDropZone extends StatefulWidget {
     required this.paneId,
     required this.vm,
     required this.child,
+    this.stripHeight = 40,
   });
 
+  final double stripHeight;
   final String paneId;
   final CockpitViewModel vm;
   final Widget child;
@@ -2052,7 +2046,6 @@ class PaneDropZone extends StatefulWidget {
 }
 
 class _PaneDropZoneState extends State<PaneDropZone> {
-  static const double _stripHeight = 40;
   static const double _edge = 0.25; // fração da borda que vira split
 
   _DropZone? _zone;
@@ -2075,13 +2068,13 @@ class _PaneDropZoneState extends State<PaneDropZone> {
     if (box == null || !box.hasSize) return _DropZone.center;
     final local = box.globalToLocal(global);
     final size = box.size;
-    if (local.dy <= _stripHeight) return _DropZone.strip;
+    if (local.dy <= widget.stripHeight) return _DropZone.strip;
 
     final bw = size.width;
-    final bh = size.height - _stripHeight;
+    final bh = size.height - widget.stripHeight;
     if (bw <= 0 || bh <= 0) return _DropZone.center;
     final fx = (local.dx / bw).clamp(0.0, 1.0);
-    final fy = ((local.dy - _stripHeight) / bh).clamp(0.0, 1.0);
+    final fy = ((local.dy - widget.stripHeight) / bh).clamp(0.0, 1.0);
 
     // Profundidade dentro de cada borda; a mais rasa (< _edge) vence.
     var best = _DropZone.center;

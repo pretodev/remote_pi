@@ -31,6 +31,7 @@ class AdaptiveTerminalPane extends StatelessWidget {
     this.onPaste,
     this.onOpenFile,
     this.readOnly = false,
+    this.ownerShortcuts = const {},
   });
 
   final CockpitTerminalController terminal;
@@ -42,6 +43,7 @@ class AdaptiveTerminalPane extends StatelessWidget {
   final VoidCallback? onPaste;
   final void Function(String path, {int? line})? onOpenFile;
   final bool readOnly;
+  final Map<ShortcutActivator, VoidCallback> ownerShortcuts;
 
   @override
   Widget build(BuildContext context) => switch (terminal) {
@@ -53,6 +55,14 @@ class AdaptiveTerminalPane extends StatelessWidget {
       theme: theme,
       hardwareKeyboardOnly: readOnly,
       onKeyEvent: (event) {
+        if (event is KeyDownEvent || event is KeyRepeatEvent) {
+          for (final entry in ownerShortcuts.entries) {
+            if (entry.key.accepts(event, HardwareKeyboard.instance)) {
+              entry.value();
+              return KeyEventResult.handled;
+            }
+          }
+        }
         if (!readOnly && onPaste != null && isTerminalPasteEvent(event)) {
           onPaste!();
           return KeyEventResult.handled;
@@ -70,8 +80,14 @@ class AdaptiveTerminalPane extends StatelessWidget {
       onPaste: onPaste,
       onOpenFile: onOpenFile,
       readOnly: readOnly,
+      ownerShortcuts: ownerShortcuts,
     ),
   };
+}
+
+final class _CockpitOwnerShortcutIntent extends Intent {
+  const _CockpitOwnerShortcutIntent(this.invoke);
+  final VoidCallback invoke;
 }
 
 final class _CockpitPasteIntent extends Intent {
@@ -92,6 +108,7 @@ class _GhosttyPane extends StatefulWidget {
     required this.onPaste,
     required this.onOpenFile,
     required this.readOnly,
+    required this.ownerShortcuts,
   });
 
   final GhosttyTerminalController terminal;
@@ -102,6 +119,7 @@ class _GhosttyPane extends StatefulWidget {
   final VoidCallback? onPaste;
   final void Function(String path, {int? line})? onOpenFile;
   final bool readOnly;
+  final Map<ShortcutActivator, VoidCallback> ownerShortcuts;
 
   @override
   State<_GhosttyPane> createState() => _GhosttyPaneState();
@@ -123,6 +141,8 @@ class _GhosttyPaneState extends State<_GhosttyPane>
     final readOnly = widget.readOnly;
     final onPaste = widget.onPaste;
     final shortcuts = <ShortcutActivator, Intent>{
+      for (final entry in widget.ownerShortcuts.entries)
+        entry.key: _CockpitOwnerShortcutIntent(entry.value),
       // ⌘F / Ctrl-F opens the find bar (works even read-only — searching a
       // frozen buffer is fine). Resolved by the Actions scope below, where
       // flterm dispatches the shortcuts it receives. Ctrl-F only off macOS:
@@ -170,18 +190,11 @@ class _GhosttyPaneState extends State<_GhosttyPane>
     );
 
     final Widget terminalView = ghost.TerminalView(
-      // IDENTIDADE GLOBAL e estável por sessão (o controller é único por aba).
-      // Quando a árvore de panes reestrutura (split envolve a folha num
-      // SplitPane, fechar um pane remove um nó), a subárvore da TerminalView
-      // MUDA de posição na árvore de widgets. Sem GlobalKey o Flutter RE-INFLA
-      // a TerminalView na posição nova (novo initState → attachView) antes do
-      // dispose/detach da antiga → "already has an active view", e no mount
-      // simultâneo do restore cruza a State entre panes → espelho. Com a
-      // GlobalKey o Flutter MOVE o mesmo Element (preserva o ViewAttachment/
-      // lease do controller) em vez de recriar. Junto ao [TerminalUnzoomBox]
-      // sem LayoutBuilder, mata crash e espelho.
-      key: GlobalObjectKey(widget.terminal.controller),
+      // Identity is per session. StablePaneHost keeps this subtree under the
+      // same parent even when its tab moves to another dock.
+      key: ObjectKey(widget.terminal.controller),
       controller: widget.terminal.controller,
+      scrollController: widget.terminal.scrollController,
       presentationActive: widget.active,
       focusNode: widget.focusNode,
       showKeyboard: !readOnly,
@@ -225,6 +238,13 @@ class _GhosttyPaneState extends State<_GhosttyPane>
             enabled: widget.active,
             child: Actions(
               actions: <Type, Action<Intent>>{
+                _CockpitOwnerShortcutIntent:
+                    CallbackAction<_CockpitOwnerShortcutIntent>(
+                      onInvoke: (intent) {
+                        intent.invoke();
+                        return null;
+                      },
+                    ),
                 _CockpitPasteIntent: CallbackAction<_CockpitPasteIntent>(
                   onInvoke: (_) {
                     onPaste?.call();
