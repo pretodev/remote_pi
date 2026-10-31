@@ -30,10 +30,15 @@ abstract class TaskRunnerGateway {
 
   /// Spawna [def] com o [profileName] escolhido (+ [adHocArgs] de uma execução
   /// só). Idempotente: se já roda, é no-op.
+  ///
+  /// [argsOverride], quando não-nulo, substitui o argv resolvido (profile +
+  /// ad-hoc) pelo que o preparador de ferramenta já montou. [restart] reusa
+  /// o argv desta execução — o device não muda no meio do processo.
   Future<void> start(
     TaskDefinition def, {
     String? profileName,
     List<String> adHocArgs = const [],
+    List<String>? argsOverride,
   });
 
   /// Mata a task limpo (SIGTERM → timeout → SIGKILL).

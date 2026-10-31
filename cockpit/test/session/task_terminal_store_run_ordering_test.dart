@@ -69,6 +69,7 @@ class SequencedRunner implements TaskRunnerGateway {
     TaskDefinition def, {
     String? profileName,
     List<String> adHocArgs = const [],
+    List<String>? argsOverride,
   }) async {}
 
   @override

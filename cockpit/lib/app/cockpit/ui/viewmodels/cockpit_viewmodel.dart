@@ -1,8 +1,12 @@
 import '../document/open_files_channel.dart';
 import '../document/native_document_router.dart';
+
 import 'package:cockpit/app/cockpit/domain/entities/orchestration_presentation.dart';
+
 import 'dart:async';
+
 import 'package:path/path.dart' as path;
+
 import '../session/orchestration_session.dart';
 import '../session/orchestration_file_presentation.dart';
 import '../document/worktree_document_host.dart';
@@ -14,6 +18,7 @@ import '../services/orchestration_ownership_migration.dart';
 import '../services/agent_role_suggestion_service.dart';
 import '../../data/terminal/local_terminal_attachments.dart';
 import '../../domain/entities/orchestration_document.dart';
+
 import 'dart:convert';
 import 'dart:io'
     show
@@ -122,6 +127,7 @@ import 'package:cockpit/app/cockpit/domain/entities/browser_capability.dart';
 import 'package:cockpit/app/cockpit/ui/session/browser_session.dart';
 import 'package:cockpit/app/cockpit/ui/session/redis_browser_session.dart';
 import 'package:cockpit/app/cockpit/domain/contracts/task_discovery.dart';
+import 'package:cockpit/app/cockpit/data/tasks/tools/task_device_coordinator.dart';
 import 'package:cockpit/app/cockpit/domain/contracts/task_runner_gateway.dart';
 import 'package:cockpit/app/cockpit/ui/session/task_output_session.dart';
 import 'package:cockpit/app/cockpit/ui/session/telemetry_case_session.dart';
@@ -207,6 +213,7 @@ class CockpitViewModel extends ChangeNotifier
     this._neovim,
     this._telemetryStores,
     this._telemetryIngest,
+    this._taskDevices,
   ) {
     _fileEditorFacade = FileEditorFacade(
       FileEditorRegistry({
@@ -1466,7 +1473,10 @@ class CockpitViewModel extends ChangeNotifier
       lastEditAt: (id) => _lastEditAt[id],
       rootsOf: rootsOf,
     ),
+    _taskDevices,
   );
+
+  final TaskDeviceCoordinator _taskDevices;
 
   // Telemetria (plano 66): stores por workspace + ingest, e o último save do
   // editor por projeto (janela `--since-edit` da CLI).
@@ -4948,9 +4958,9 @@ class CockpitViewModel extends ChangeNotifier
     if (_activeRemoteHost() != null) {
       // Mesma regra do local: commit implícito em dois repositórios diferentes
       // não acontece — o usuário comita cada um por vez.
-      final staged = rootsOf(
-        pid,
-      ).where((root) => stagedFilesOfRoot(root).isNotEmpty).toList();
+      final staged = rootsOf(pid)
+          .where((root) => stagedFilesOfRoot(root).isNotEmpty)
+          .toList();
       if (staged.isEmpty) {
         return 'There are no staged changes to commit.';
       }
@@ -4977,9 +4987,9 @@ class CockpitViewModel extends ChangeNotifier
         return '$e';
       }
     }
-    final roots = rootsOf(
-      pid,
-    ).where((root) => stagedFilesOfRoot(root).isNotEmpty).toList();
+    final roots = rootsOf(pid)
+        .where((root) => stagedFilesOfRoot(root).isNotEmpty)
+        .toList();
     if (roots.isEmpty) return 'There are no staged changes to commit.';
     if (roots.length > 1) {
       return 'Stage changes belong to multiple repositories. Commit them separately.';
@@ -5270,9 +5280,9 @@ class CockpitViewModel extends ChangeNotifier
     if (pid == null) {
       return const Failure(AutomationError(AutomationErrorKind.noWorkspace));
     }
-    final roots = rootsOf(
-      pid,
-    ).where((root) => stagedFilesOfRoot(root).isNotEmpty).toList();
+    final roots = rootsOf(pid)
+        .where((root) => stagedFilesOfRoot(root).isNotEmpty)
+        .toList();
     if (roots.isEmpty) {
       return const Failure(
         AutomationError(AutomationErrorKind.noStagedChanges),
@@ -6345,9 +6355,8 @@ class CockpitViewModel extends ChangeNotifier
       final tree = _trees[id];
       final tabs = tree == null
           ? 0
-          : leaves(
-              tree,
-            ).fold<int>(0, (count, leaf) => count + leaf.tabs.length);
+          : leaves(tree)
+                .fold<int>(0, (count, leaf) => count + leaf.tabs.length);
       PerformanceDiagnostics.instance.record(PerfMetric.workspaceReadyFrame, {
         PerfField.durationUs: clock.elapsedMicroseconds,
         PerfField.tabs: tabs,

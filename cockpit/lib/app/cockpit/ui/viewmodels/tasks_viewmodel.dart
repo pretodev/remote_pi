@@ -1,10 +1,12 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:cockpit/app/cockpit/data/tasks/tools/task_device_coordinator.dart';
 import 'package:cockpit/app/cockpit/domain/contracts/task_discovery.dart';
 import 'package:cockpit/app/cockpit/domain/contracts/task_runner_gateway.dart';
 import 'package:cockpit/app/cockpit/domain/entities/gallery_template.dart';
 import 'package:cockpit/app/cockpit/domain/entities/task_definition.dart';
+import 'package:cockpit/app/cockpit/domain/entities/task_device_snapshot.dart';
 import 'package:cockpit/app/cockpit/domain/entities/task_run.dart';
 import 'package:cockpit/app/cockpit/data/tasks/compose_tasks.dart';
 import 'package:flutter/foundation.dart';
@@ -13,12 +15,21 @@ import 'package:flutter/foundation.dart';
 /// selecionado e dirige o ciclo de vida via [TaskRunnerGateway], refletindo o
 /// stream de estados vivos. A `ui/` nunca toca `data/` direto.
 class TasksViewModel extends ChangeNotifier {
-  TasksViewModel(this._localDiscovery, this._localRunner) {
+  TasksViewModel(this._localDiscovery, this._localRunner, this._devices) {
     _subscribeRuns();
   }
 
   final TaskDiscovery _localDiscovery;
   final TaskRunnerGateway _localRunner;
+  final TaskDeviceCoordinator _devices;
+
+  /// Intervalo da reconsulta de devices. Curto o bastante para um aparelho
+  /// recém-conectado aparecer, longo o bastante para não disparar `flutter
+  /// devices` o tempo todo.
+  static const _devicePollInterval = Duration(seconds: 8);
+
+  Timer? _devicePoll;
+  bool _closed = false;
 
   /// Contexto de tasks REMOTO por cwd (plano 58): setado pela `CockpitPage`,
   /// devolve o par (descoberta + runner) do host quando o workspace é remoto,
@@ -133,6 +144,8 @@ class TasksViewModel extends ChangeNotifier {
         : (cwd.isNotEmpty && File(_configPath(cwd)).existsSync());
     _loading = false;
     notifyListeners();
+    if (cwd != _cwd || _closed) return;
+    await _syncDevices();
   }
 
   /// `true` quando o workspace ativo é remoto (o painel esconde ações que só
@@ -191,17 +204,82 @@ class TasksViewModel extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Comando final (preview) com os args do profile escolhido aplicados.
-  String commandPreview(TaskDefinition def) {
-    final name = selectedProfile(def);
-    final profile = name == null
-        ? null
-        : def.profiles.firstWhere((p) => p.name == name);
-    return '${def.command} ${def.resolveArgs(profile).join(' ')}'.trim();
+  /// Estado do seletor de device. [TaskDeviceSnapshot.hidden] quando o comando
+  /// não executa em device, ou quando o workspace é remoto.
+  TaskDeviceSnapshot deviceState(TaskDefinition def) => _devices.snapshot(
+    def,
+    profileName: selectedProfile(def),
+    remote: _remote != null,
+  );
+
+  /// Grava a escolha manual. A prioridade automática não volta a substituí-la.
+  Future<void> selectDevice(TaskDefinition def, String deviceId) async {
+    await _devices.select(def, deviceId);
+    if (!_closed) notifyListeners();
   }
 
-  Future<void> start(TaskDefinition def) =>
-      _runner.start(def, profileName: selectedProfile(def));
+  /// Reconsulta os devices desta task (abertura do menu) e devolve o estado novo.
+  Future<TaskDeviceSnapshot> refreshDevices(TaskDefinition def) async {
+    await _devices.refresh(def, profileName: selectedProfile(def));
+    if (!_closed) notifyListeners();
+    return deviceState(def);
+  }
+
+  /// Comando final (preview) com o profile e, se houver, o device efetivo.
+  String commandPreview(TaskDefinition def) {
+    final args = _devices.previewArgs(
+      def,
+      profileName: selectedProfile(def),
+      remote: _remote != null,
+    );
+    return '${def.command} ${args.join(' ')}'.trim();
+  }
+
+  /// `true` quando a task chegou a ser iniciada. `false` se não havia device
+  /// compatível — o painel não abre a aba de output nesse caso.
+  Future<bool> start(TaskDefinition def) async {
+    final plan = await _devices.plan(
+      def,
+      profileName: selectedProfile(def),
+      remote: _remote != null,
+    );
+    if (plan.blocked) {
+      if (!_closed) notifyListeners();
+      return false;
+    }
+    await _runner.start(
+      def,
+      profileName: selectedProfile(def),
+      argsOverride: plan.argsOverride,
+    );
+    return true;
+  }
+
+  Future<void> _syncDevices() async {
+    _devicePoll?.cancel();
+    _devicePoll = null;
+    if (_closed || _remote != null || _cwd.isEmpty) return;
+    final runnable = _tasks.where((def) => deviceState(def).offered);
+    if (runnable.isEmpty) return;
+    await _refreshDevices();
+    if (_closed) return;
+    _devicePoll = Timer.periodic(_devicePollInterval, (_) {
+      unawaited(_refreshDevices());
+    });
+  }
+
+  Future<void> _refreshDevices() async {
+    if (_closed || _remote != null) return;
+    var changed = false;
+    for (final def in _tasks) {
+      if (_closed) return;
+      if (!deviceState(def).offered) continue;
+      if (await _devices.refresh(def, profileName: selectedProfile(def))) {
+        changed = true;
+      }
+    }
+    if (changed && !_closed) notifyListeners();
+  }
 
   Future<void> attachOutput(String taskId) async {
     final reconciled = _runner;
@@ -244,9 +322,11 @@ class TasksViewModel extends ChangeNotifier {
 
   @override
   void dispose() {
+    _closed = true;
     _sub?.cancel();
     _configWatch?.cancel();
     _reloadDebounce?.cancel();
+    _devicePoll?.cancel();
     super.dispose();
   }
 }

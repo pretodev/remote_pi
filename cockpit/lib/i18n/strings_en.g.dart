@@ -1158,6 +1158,21 @@ class Translations$cockpit$tasksPanel$en {
 
 	/// en: 'Kept non-Compose tasks with conflicting labels: ${labels}'
 	String composeConflicts({required Object labels}) => 'Kept non-Compose tasks with conflicting labels: ${labels}';
+
+	/// en: 'Run on ${name}'
+	String deviceTooltip({required Object name}) => 'Run on ${name}';
+
+	/// en: '${name} is unavailable'
+	String deviceUnavailableTooltip({required Object name}) => '${name} is unavailable';
+
+	/// en: 'No compatible device'
+	String get noDevicesTooltip => 'No compatible device';
+
+	/// en: 'No compatible devices'
+	String get noDevicesMenu => 'No compatible devices';
+
+	/// en: 'Looking for devices…'
+	String get lookingForDevices => 'Looking for devices…';
 }
 
 // Path: cockpit.cockpitPage
@@ -4620,6 +4635,11 @@ extension on Translations {
 			'cockpit.tasksPanel.invalidComposeFile' => 'The active file is not a valid Compose file with services.',
 			'cockpit.tasksPanel.invalidTasksJson' => 'tasks.json is invalid. No changes were written.',
 			'cockpit.tasksPanel.composeConflicts' => ({required Object labels}) => 'Kept non-Compose tasks with conflicting labels: ${labels}',
+			'cockpit.tasksPanel.deviceTooltip' => ({required Object name}) => 'Run on ${name}',
+			'cockpit.tasksPanel.deviceUnavailableTooltip' => ({required Object name}) => '${name} is unavailable',
+			'cockpit.tasksPanel.noDevicesTooltip' => 'No compatible device',
+			'cockpit.tasksPanel.noDevicesMenu' => 'No compatible devices',
+			'cockpit.tasksPanel.lookingForDevices' => 'Looking for devices…',
 			'cockpit.cockpitPage.chooseProjectFolderDialogTitle' => 'Choose the project folder',
 			'cockpit.cockpitPage.chooseWorkspaceFolderDialogTitle' => 'Choose the workspace folder',
 			'cockpit.cockpitPage.workspaceRenamedTitle' => 'Workspace renamed',
@@ -4977,13 +4997,13 @@ extension on Translations {
 			'cockpit.dbConnectionDialog.sshTunnel' => 'SSH Tunnel',
 			'cockpit.dbConnectionDialog.sshHost' => 'SSH Host',
 			'cockpit.dbConnectionDialog.sshPort' => 'SSH Port',
+			_ => null,
+		} ?? switch (path) {
 			'cockpit.dbConnectionDialog.sshUser' => 'SSH User',
 			'cockpit.dbConnectionDialog.privateKey' => 'Private key',
 			'cockpit.dbConnectionDialog.choosePrivateKeyPlaceholder' => 'Choose a private key…',
 			'cockpit.dbConnectionDialog.choosePrivateKeyDialogTitle' => 'Choose SSH private key',
 			'cockpit.dbConnectionDialog.keyPassphrase' => 'Key passphrase',
-			_ => null,
-		} ?? switch (path) {
 			'cockpit.dbConnectionDialog.savePassphrase' => 'Save passphrase',
 			'cockpit.dbConnectionDialog.passwordOnHost' => 'The password is stored on the host, not on this machine.',
 			'cockpit.sshPrompts.unknownSshHostTitle' => 'Unknown SSH host',
@@ -5491,13 +5511,13 @@ extension on Translations {
 			'fileOperation.error.invalidPath' => 'Invalid path.',
 			'fileOperation.error.emptyName' => 'The name cannot be empty.',
 			'fileOperation.error.noWorkspace' => 'No workspace selected.',
+			_ => null,
+		} ?? switch (path) {
 			'fileOperation.error.cannotMoveIntoItself' => 'Cannot move a folder into itself.',
 			'fileOperation.error.clipboardEmpty' => 'Clipboard is empty.',
 			'fileOperation.error.notScratchTab' => 'This tab is not a scratch file.',
 			'fileOperation.error.writeFailed' => 'Could not write the file.',
 			'fileOperation.error.formatterEmptyCommand' => 'Empty formatter command.',
-			_ => null,
-		} ?? switch (path) {
 			'fileOperation.error.formatterMissingPlaceholder' => 'Formatter command must include the %FILE% placeholder.',
 			'fileOperation.error.formatterTimeout' => 'Formatter timed out.',
 			'fileOperation.error.formatterExitCode' => ({required Object code}) => 'Formatter exited with ${code}.',

@@ -596,6 +596,11 @@ class _Translations$cockpit$tasksPanel$pt_BR extends Translations$cockpit$tasksP
 	@override String get invalidComposeFile => 'O arquivo ativo não é um Compose válido com services.';
 	@override String get invalidTasksJson => 'tasks.json é inválido. Nenhuma alteração foi gravada.';
 	@override String composeConflicts({required Object labels}) => 'Tasks não Compose com rótulos conflitantes foram mantidas: ${labels}';
+	@override String deviceTooltip({required Object name}) => 'Executar em ${name}';
+	@override String deviceUnavailableTooltip({required Object name}) => '${name} não está disponível';
+	@override String get noDevicesTooltip => 'Nenhum dispositivo compatível';
+	@override String get noDevicesMenu => 'Nenhum dispositivo compatível';
+	@override String get lookingForDevices => 'Procurando dispositivos…';
 }
 
 // Path: cockpit.cockpitPage
@@ -2268,6 +2273,11 @@ extension on TranslationsPtBr {
 			'cockpit.tasksPanel.invalidComposeFile' => 'O arquivo ativo não é um Compose válido com services.',
 			'cockpit.tasksPanel.invalidTasksJson' => 'tasks.json é inválido. Nenhuma alteração foi gravada.',
 			'cockpit.tasksPanel.composeConflicts' => ({required Object labels}) => 'Tasks não Compose com rótulos conflitantes foram mantidas: ${labels}',
+			'cockpit.tasksPanel.deviceTooltip' => ({required Object name}) => 'Executar em ${name}',
+			'cockpit.tasksPanel.deviceUnavailableTooltip' => ({required Object name}) => '${name} não está disponível',
+			'cockpit.tasksPanel.noDevicesTooltip' => 'Nenhum dispositivo compatível',
+			'cockpit.tasksPanel.noDevicesMenu' => 'Nenhum dispositivo compatível',
+			'cockpit.tasksPanel.lookingForDevices' => 'Procurando dispositivos…',
 			'cockpit.cockpitPage.chooseProjectFolderDialogTitle' => 'Escolha a pasta do projeto',
 			'cockpit.cockpitPage.chooseWorkspaceFolderDialogTitle' => 'Escolha a pasta do workspace',
 			'cockpit.cockpitPage.workspaceRenamedTitle' => 'Workspace renomeado',
@@ -2625,13 +2635,13 @@ extension on TranslationsPtBr {
 			'cockpit.dbConnectionDialog.sshTunnel' => 'Túnel SSH',
 			'cockpit.dbConnectionDialog.sshHost' => 'Host SSH',
 			'cockpit.dbConnectionDialog.sshPort' => 'Porta SSH',
+			_ => null,
+		} ?? switch (path) {
 			'cockpit.dbConnectionDialog.sshUser' => 'Usuário SSH',
 			'cockpit.dbConnectionDialog.privateKey' => 'Chave privada',
 			'cockpit.dbConnectionDialog.choosePrivateKeyPlaceholder' => 'Escolha uma chave privada…',
 			'cockpit.dbConnectionDialog.choosePrivateKeyDialogTitle' => 'Escolher chave privada SSH',
 			'cockpit.dbConnectionDialog.keyPassphrase' => 'Senha da chave',
-			_ => null,
-		} ?? switch (path) {
 			'cockpit.dbConnectionDialog.savePassphrase' => 'Salvar senha da chave',
 			'cockpit.dbConnectionDialog.passwordOnHost' => 'A senha fica salva no host, não nesta máquina.',
 			'cockpit.sshPrompts.unknownSshHostTitle' => 'Host SSH desconhecido',
@@ -3139,13 +3149,13 @@ extension on TranslationsPtBr {
 			'fileOperation.error.invalidPath' => 'Caminho inválido.',
 			'fileOperation.error.emptyName' => 'O nome não pode ficar vazio.',
 			'fileOperation.error.noWorkspace' => 'Nenhum workspace selecionado.',
+			_ => null,
+		} ?? switch (path) {
 			'fileOperation.error.cannotMoveIntoItself' => 'Não é possível mover uma pasta para dentro dela mesma.',
 			'fileOperation.error.clipboardEmpty' => 'A área de transferência está vazia.',
 			'fileOperation.error.notScratchTab' => 'Esta aba não é um arquivo temporário.',
 			'fileOperation.error.writeFailed' => 'Não foi possível gravar o arquivo.',
 			'fileOperation.error.formatterEmptyCommand' => 'Comando de formatação vazio.',
-			_ => null,
-		} ?? switch (path) {
 			'fileOperation.error.formatterMissingPlaceholder' => 'O comando de formatação precisa incluir o placeholder %FILE%.',
 			'fileOperation.error.formatterTimeout' => 'O formatador excedeu o tempo limite.',
 			'fileOperation.error.formatterExitCode' => ({required Object code}) => 'O formatador saiu com código ${code}.',

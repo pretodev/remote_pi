@@ -68,6 +68,7 @@ class PtyTaskRunner implements TaskRunnerGateway, ReconciledTaskRunnerGateway {
     TaskDefinition def, {
     String? profileName,
     List<String> adHocArgs = const [],
+    List<String>? argsOverride,
   }) {
     final compose =
         _composeDefinitions[def.id]?.task ??
@@ -75,7 +76,12 @@ class PtyTaskRunner implements TaskRunnerGateway, ReconciledTaskRunnerGateway {
     if (compose != null) {
       return _startCompose(def, compose, profileName);
     }
-    return _launch(def, profileName: profileName, adHocArgs: adHocArgs);
+    return _launch(
+      def,
+      profileName: profileName,
+      adHocArgs: adHocArgs,
+      argsOverride: argsOverride,
+    );
   }
 
   @override
@@ -338,6 +344,7 @@ class PtyTaskRunner implements TaskRunnerGateway, ReconciledTaskRunnerGateway {
     TaskDefinition def, {
     String? profileName,
     List<String> adHocArgs = const [],
+    List<String>? argsOverride,
     bool restarting = false,
   }) async {
     if (_running.containsKey(def.id)) return; // idempotente
@@ -359,7 +366,7 @@ class PtyTaskRunner implements TaskRunnerGateway, ReconciledTaskRunnerGateway {
       final profile = profileName == null
           ? null
           : def.profiles.firstWhere((p) => p.name == profileName);
-      final argv = [...def.resolveArgs(profile), ...adHocArgs];
+      final argv = argsOverride ?? [...def.resolveArgs(profile), ...adHocArgs];
       final cmdLine = _join([def.command, ...argv]);
       telemetry = await _telemetry.openTaskRun(def, command: cmdLine);
 
@@ -418,6 +425,8 @@ class PtyTaskRunner implements TaskRunnerGateway, ReconciledTaskRunnerGateway {
       initial,
       isRestart: restarting,
       telemetry: telemetry,
+      adHocArgs: adHocArgs,
+      argsOverride: argsOverride,
       onOutput: (data) {
         if (!task.out.isClosed) task.out.add(data);
         task.telemetry?.add(data);
@@ -550,12 +559,20 @@ class PtyTaskRunner implements TaskRunnerGateway, ReconciledTaskRunnerGateway {
     if (task == null) return;
     final def = task.def;
     final profileName = task.state.profileName;
+    final adHocArgs = task.adHocArgs;
+    final argsOverride = task.argsOverride;
     await stop(taskId);
     // Aguarda o slot liberar (até ~3.5s) antes de re-spawnar.
     for (var i = 0; i < 35 && _running.containsKey(taskId); i++) {
       await Future<void>.delayed(const Duration(milliseconds: 100));
     }
-    await _launch(def, profileName: profileName, restarting: true);
+    await _launch(
+      def,
+      profileName: profileName,
+      adHocArgs: adHocArgs,
+      argsOverride: argsOverride,
+      restarting: true,
+    );
   }
 
   @override
@@ -594,28 +611,30 @@ class PtyTaskRunner implements TaskRunnerGateway, ReconciledTaskRunnerGateway {
     final dir = Directory(root);
     if (!dir.existsSync()) return null;
     try {
-      return dir.watch(recursive: true).listen(
-        (event) {
-          if (!_matchesWatch(def.cwd, w, event.path)) return;
-          _watchDebounce[def.id]?.cancel();
-          _watchDebounce[def.id] = Timer(
-            Duration(milliseconds: w.debounceMs),
-            () => _dispatchWatch(def, w),
+      return dir
+          .watch(recursive: true)
+          .listen(
+            (event) {
+              if (!_matchesWatch(def.cwd, w, event.path)) return;
+              _watchDebounce[def.id]?.cancel();
+              _watchDebounce[def.id] = Timer(
+                Duration(milliseconds: w.debounceMs),
+                () => _dispatchWatch(def, w),
+              );
+            },
+            // Overflow/handle fechado: rearma a pasta depois de uma folga em vez
+            // de deixar o erro vazar (uncaught) e o watch morrer.
+            onError: (Object e) {
+              DiagnosticsLog.instance.warn('task', 'watch $root: $e');
+              Timer(const Duration(seconds: 2), () {
+                final current = _watchers[def.id];
+                if (current == null) return; // stopWatch nesse meio tempo
+                final again = _watchDir(def, w, root);
+                if (again != null) current.add(again);
+              });
+            },
+            cancelOnError: true,
           );
-        },
-        // Overflow/handle fechado: rearma a pasta depois de uma folga em vez
-        // de deixar o erro vazar (uncaught) e o watch morrer.
-        onError: (Object e) {
-          DiagnosticsLog.instance.warn('task', 'watch $root: $e');
-          Timer(const Duration(seconds: 2), () {
-            final current = _watchers[def.id];
-            if (current == null) return; // stopWatch nesse meio tempo
-            final again = _watchDir(def, w, root);
-            if (again != null) current.add(again);
-          });
-        },
-        cancelOnError: true,
-      );
     } on FileSystemException {
       // FS sem suporte a watch recursivo → silencioso (sem reload automático).
       return null;
@@ -912,6 +931,8 @@ class _RunningTask {
     required void Function(String data) onOutput,
     this.isRestart = false,
     this.telemetry,
+    this.adHocArgs = const [],
+    this.argsOverride,
   }) : coalescer = PtyOutputCoalescer(
          onFlush: onOutput,
          onAcknowledge: pty.ackRead,
@@ -932,6 +953,11 @@ class _RunningTask {
   /// `true` quando o run nasceu de um restart (botão ou watcher) em vez de um
   /// start. Só o auto-open do preview olha isso (`previewOpen: "start"`).
   final bool isRestart;
+
+  /// Argv extra e substituição usados no start. O restart relança com os mesmos
+  /// — inclusive o `-d` escolhido antes do play.
+  final List<String> adHocArgs;
+  final List<String>? argsOverride;
 
   /// Auto-open do navegador (plano 58): no máximo uma emissão por run.
   bool previewNotified = false;

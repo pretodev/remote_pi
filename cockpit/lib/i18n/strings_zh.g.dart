@@ -518,6 +518,11 @@ class _Translations$cockpit$tasksPanel$zh extends Translations$cockpit$tasksPane
 	@override String get invalidComposeFile => '当前文件不是包含服务的有效 Compose 文件。';
 	@override String get invalidTasksJson => 'tasks.json 无效。未写入任何更改。';
 	@override String composeConflicts({required Object labels}) => '保留了与 Compose 标签冲突的非 Compose 任务：${labels}';
+	@override String deviceTooltip({required Object name}) => '在 ${name} 上运行';
+	@override String deviceUnavailableTooltip({required Object name}) => '${name} 不可用';
+	@override String get noDevicesTooltip => '没有兼容的设备';
+	@override String get noDevicesMenu => '没有兼容的设备';
+	@override String get lookingForDevices => '正在查找设备…';
 }
 
 // Path: cockpit.cockpitPage
@@ -2190,6 +2195,11 @@ extension on TranslationsZh {
 			'cockpit.tasksPanel.invalidComposeFile' => '当前文件不是包含服务的有效 Compose 文件。',
 			'cockpit.tasksPanel.invalidTasksJson' => 'tasks.json 无效。未写入任何更改。',
 			'cockpit.tasksPanel.composeConflicts' => ({required Object labels}) => '保留了与 Compose 标签冲突的非 Compose 任务：${labels}',
+			'cockpit.tasksPanel.deviceTooltip' => ({required Object name}) => '在 ${name} 上运行',
+			'cockpit.tasksPanel.deviceUnavailableTooltip' => ({required Object name}) => '${name} 不可用',
+			'cockpit.tasksPanel.noDevicesTooltip' => '没有兼容的设备',
+			'cockpit.tasksPanel.noDevicesMenu' => '没有兼容的设备',
+			'cockpit.tasksPanel.lookingForDevices' => '正在查找设备…',
 			'cockpit.cockpitPage.chooseProjectFolderDialogTitle' => '选择项目文件夹',
 			'cockpit.cockpitPage.chooseWorkspaceFolderDialogTitle' => '选择工作区文件夹',
 			'cockpit.cockpitPage.workspaceRenamedTitle' => '工作区已重命名',
@@ -2547,13 +2557,13 @@ extension on TranslationsZh {
 			'cockpit.dbConnectionDialog.sshTunnel' => 'SSH 隧道',
 			'cockpit.dbConnectionDialog.sshHost' => 'SSH 主机',
 			'cockpit.dbConnectionDialog.sshPort' => 'SSH 端口',
+			_ => null,
+		} ?? switch (path) {
 			'cockpit.dbConnectionDialog.sshUser' => 'SSH 用户',
 			'cockpit.dbConnectionDialog.privateKey' => '私钥',
 			'cockpit.dbConnectionDialog.choosePrivateKeyPlaceholder' => '选择一个私钥…',
 			'cockpit.dbConnectionDialog.choosePrivateKeyDialogTitle' => '选择 SSH 私钥',
 			'cockpit.dbConnectionDialog.keyPassphrase' => '密钥口令',
-			_ => null,
-		} ?? switch (path) {
 			'cockpit.dbConnectionDialog.savePassphrase' => '保存口令',
 			'cockpit.dbConnectionDialog.passwordOnHost' => '密码保存在主机上，而不是这台机器上。',
 			'cockpit.sshPrompts.unknownSshHostTitle' => '未知的 SSH 主机',
@@ -3061,13 +3071,13 @@ extension on TranslationsZh {
 			'fileOperation.error.invalidPath' => '无效的路径。',
 			'fileOperation.error.emptyName' => '名称不能为空。',
 			'fileOperation.error.noWorkspace' => '未选择工作区。',
+			_ => null,
+		} ?? switch (path) {
 			'fileOperation.error.cannotMoveIntoItself' => '无法将文件夹移动到其自身内部。',
 			'fileOperation.error.clipboardEmpty' => '剪贴板为空。',
 			'fileOperation.error.notScratchTab' => '此标签页不是草稿文件。',
 			'fileOperation.error.writeFailed' => '无法写入文件。',
 			'fileOperation.error.formatterEmptyCommand' => '格式化器命令为空。',
-			_ => null,
-		} ?? switch (path) {
 			'fileOperation.error.formatterMissingPlaceholder' => '格式化器命令必须包含 %FILE% 占位符。',
 			'fileOperation.error.formatterTimeout' => '格式化器超时。',
 			'fileOperation.error.formatterExitCode' => ({required Object code}) => '格式化器以退出码 ${code} 结束。',
