@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:cockpit/app/cockpit/data/tasks/tools/task_device_coordinator.dart';
+import 'package:cockpit/app/cockpit/domain/contracts/dev_tool.dart';
 import 'package:cockpit/app/cockpit/domain/contracts/task_discovery.dart';
 import 'package:cockpit/app/cockpit/domain/contracts/task_runner_gateway.dart';
 import 'package:cockpit/app/cockpit/domain/entities/gallery_template.dart';
@@ -44,9 +45,17 @@ class TasksViewModel extends ChangeNotifier {
   TaskRunnerGateway get _runner => _remote?.runner ?? _localRunner;
 
   StreamSubscription<TaskRun>? _sub;
+  StreamSubscription<TaskSessionUrl>? _sessionSub;
+
+  /// URL de sessão da execução corrente, por task. Some no stop e no restart;
+  /// a próxima só entra quando o output novo anuncia o serviço.
+  final _sessionUrls = <String, String>{};
+
   void _subscribeRuns() {
     _sub?.cancel();
+    _sessionSub?.cancel();
     _sub = _runner.runs().listen(_onRun);
+    _sessionSub = _runner.sessionUrls().listen(_onSession);
   }
 
   StreamSubscription<FileSystemEvent>? _configWatch;
@@ -113,6 +122,7 @@ class TasksViewModel extends ChangeNotifier {
     // estados e reaponta a descoberta.
     if (!identical(remote?.runner, _remote?.runner)) {
       _remote = remote;
+      _sessionUrls.clear();
       _subscribeRuns();
     }
     _watchConfig(cwd);
@@ -225,6 +235,21 @@ class TasksViewModel extends ChangeNotifier {
     return deviceState(def);
   }
 
+  /// Ações da execução (DevTools, …). Vazio se a task não está ativa, se o
+  /// serviço ainda não anunciou a URL, ou se a ferramenta não oferece ação.
+  List<TaskRunAction> actionsFor(TaskDefinition def) {
+    if (!stateOf(def.id).isActive) return const [];
+    final url = _sessionUrls[def.id] ?? _runner.sessionUrlOf(def.id);
+    if (url == null || url.isEmpty) return const [];
+    final action = _devices.sessionAction(
+      def,
+      profileName: selectedProfile(def),
+      sessionUrl: url,
+      remote: _remote != null,
+    );
+    return action == null ? const [] : [action];
+  }
+
   /// Comando final (preview) com o profile e, se houver, o device efetivo.
   String commandPreview(TaskDefinition def) {
     final args = _devices.previewArgs(
@@ -309,8 +334,20 @@ class TasksViewModel extends ChangeNotifier {
       if (def != null) _runner.startWatch(def);
     } else {
       _runner.stopWatch(run.taskId);
+      _sessionUrls.remove(run.taskId);
     }
     notifyListeners();
+  }
+
+  void _onSession(TaskSessionUrl event) {
+    if (event.url.isEmpty) {
+      if (_sessionUrls.remove(event.taskId) == null) return;
+    } else {
+      if (!stateOf(event.taskId).isActive) return;
+      if (_sessionUrls[event.taskId] == event.url) return;
+      _sessionUrls[event.taskId] = event.url;
+    }
+    if (!_closed) notifyListeners();
   }
 
   TaskDefinition? _defOf(String taskId) {
@@ -324,6 +361,7 @@ class TasksViewModel extends ChangeNotifier {
   void dispose() {
     _closed = true;
     _sub?.cancel();
+    _sessionSub?.cancel();
     _configWatch?.cancel();
     _reloadDebounce?.cancel();
     _devicePoll?.cancel();

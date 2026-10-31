@@ -282,12 +282,12 @@ Future<Module> buildCockpitModule({
           const TelemetryLineParserFactoryImpl(),
         )
         ..addLazySingleton<TelemetryIngest>(TelemetryIngestImpl.new)
+        ..addInstance<DevToolRegistry>(DevToolRegistry(const [FlutterTool()]))
         ..addLazySingleton<TaskRunnerGateway>(PtyTaskRunner.new)
         ..addInstance<DeviceSelectionStore>(
           JsonDeviceSelectionStore(taskDeviceStore),
         )
         ..addInstance<HostOs>(_currentHostOs())
-        ..addInstance<DevToolRegistry>(DevToolRegistry(const [FlutterTool()]))
         ..addLazySingleton<TaskDeviceCoordinator>(TaskDeviceCoordinator.new)
         ..addLazySingleton(TaskTerminalStore.new)
         ..addInstance<TaskDiscovery>(TaskDiscoveryImpl(const []))

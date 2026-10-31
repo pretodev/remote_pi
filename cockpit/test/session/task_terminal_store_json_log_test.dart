@@ -26,6 +26,12 @@ class FakeTaskRunner implements TaskRunnerGateway {
   Stream<TaskPreviewUrl> previewUrls() => const Stream<TaskPreviewUrl>.empty();
 
   @override
+  Stream<TaskSessionUrl> sessionUrls() => const Stream<TaskSessionUrl>.empty();
+
+  @override
+  String? sessionUrlOf(String taskId) => null;
+
+  @override
   TaskRun runOf(String taskId) => TaskRun.idleFor(taskId);
 
   @override

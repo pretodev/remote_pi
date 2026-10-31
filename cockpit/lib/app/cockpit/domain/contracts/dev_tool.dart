@@ -84,3 +84,47 @@ abstract class DeviceRunTool implements DevTool {
   /// acrescenta `-d <id>`, preservando o resto.
   List<String> withDevice(List<String> args, String deviceId);
 }
+
+/// O que o output de uma execução revelou sobre a sessão da ferramenta.
+///
+/// [sessionUrl] é o alvo da ação manual (vazio se ainda não dá para abrir).
+/// [consumedUrls] são URLs da ferramenta, não do app — o auto-open de preview
+/// não pode tratá-las como dev server.
+class DevSessionHint {
+  const DevSessionHint({this.sessionUrl, this.consumedUrls = const []});
+
+  final String? sessionUrl;
+  final List<String> consumedUrls;
+}
+
+/// Ação contextual de uma execução, pronta para a linha da task.
+///
+/// A UI desenha [label] e [icon] e, no clique, abre [url]. Não interpreta o
+/// comando.
+class TaskRunAction {
+  const TaskRunAction({
+    required this.id,
+    required this.label,
+    required this.icon,
+    required this.url,
+  });
+
+  final String id;
+  final String label;
+
+  /// Token de ícone (`devtools`, `refresh`). A linha da task mapeia o token;
+  /// um desconhecido cai no fallback de texto.
+  final String icon;
+  final String url;
+}
+
+/// Ferramenta que publica uma ação enquanto a aplicação está em execução.
+/// Quem só identifica comandos implementa [DevTool] e para por aí.
+abstract class RunSessionTool implements DevTool {
+  /// Lê um trecho do output. Null se este comando não tem sessão, ou se o
+  /// trecho ainda não traz uma URL utilizável.
+  DevSessionHint? inspectOutput(ParsedDevCommand command, String text);
+
+  /// Ação para [sessionUrl], ou null se a operação não oferece uma.
+  TaskRunAction? action(ParsedDevCommand command, {required String sessionUrl});
+}

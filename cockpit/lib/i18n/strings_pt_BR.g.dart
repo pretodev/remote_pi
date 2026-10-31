@@ -601,6 +601,7 @@ class _Translations$cockpit$tasksPanel$pt_BR extends Translations$cockpit$tasksP
 	@override String get noDevicesTooltip => 'Nenhum dispositivo compatível';
 	@override String get noDevicesMenu => 'Nenhum dispositivo compatível';
 	@override String get lookingForDevices => 'Procurando dispositivos…';
+	@override String get openDevTools => 'Abrir DevTools';
 }
 
 // Path: cockpit.cockpitPage
@@ -2278,6 +2279,7 @@ extension on TranslationsPtBr {
 			'cockpit.tasksPanel.noDevicesTooltip' => 'Nenhum dispositivo compatível',
 			'cockpit.tasksPanel.noDevicesMenu' => 'Nenhum dispositivo compatível',
 			'cockpit.tasksPanel.lookingForDevices' => 'Procurando dispositivos…',
+			'cockpit.tasksPanel.openDevTools' => 'Abrir DevTools',
 			'cockpit.cockpitPage.chooseProjectFolderDialogTitle' => 'Escolha a pasta do projeto',
 			'cockpit.cockpitPage.chooseWorkspaceFolderDialogTitle' => 'Escolha a pasta do workspace',
 			'cockpit.cockpitPage.workspaceRenamedTitle' => 'Workspace renomeado',
@@ -2634,9 +2636,9 @@ extension on TranslationsPtBr {
 			'cockpit.dbConnectionDialog.invalidUrl' => 'URL de conexão inválida.',
 			'cockpit.dbConnectionDialog.sshTunnel' => 'Túnel SSH',
 			'cockpit.dbConnectionDialog.sshHost' => 'Host SSH',
-			'cockpit.dbConnectionDialog.sshPort' => 'Porta SSH',
 			_ => null,
 		} ?? switch (path) {
+			'cockpit.dbConnectionDialog.sshPort' => 'Porta SSH',
 			'cockpit.dbConnectionDialog.sshUser' => 'Usuário SSH',
 			'cockpit.dbConnectionDialog.privateKey' => 'Chave privada',
 			'cockpit.dbConnectionDialog.choosePrivateKeyPlaceholder' => 'Escolha uma chave privada…',
@@ -3148,9 +3150,9 @@ extension on TranslationsPtBr {
 			'fileOperation.error.notFound' => ({required Object name}) => 'Não encontrado: “${name}”.',
 			'fileOperation.error.invalidPath' => 'Caminho inválido.',
 			'fileOperation.error.emptyName' => 'O nome não pode ficar vazio.',
-			'fileOperation.error.noWorkspace' => 'Nenhum workspace selecionado.',
 			_ => null,
 		} ?? switch (path) {
+			'fileOperation.error.noWorkspace' => 'Nenhum workspace selecionado.',
 			'fileOperation.error.cannotMoveIntoItself' => 'Não é possível mover uma pasta para dentro dela mesma.',
 			'fileOperation.error.clipboardEmpty' => 'A área de transferência está vazia.',
 			'fileOperation.error.notScratchTab' => 'Esta aba não é um arquivo temporário.',

@@ -1,9 +1,11 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:cockpit/app/cockpit/data/tasks/preview_url_scan.dart';
 import 'package:cockpit/app/cockpit/data/tasks/project_paths.dart';
 import 'package:cockpit/app/cockpit/domain/contracts/dev_tool.dart';
 import 'package:cockpit/app/core/utils/login_shell.dart';
+import 'package:cockpit/i18n/strings.g.dart';
 
 /// Roda um executável e devolve o [ProcessResult]. Injetável nos testes.
 typedef FlutterCommandRunner =
@@ -15,7 +17,7 @@ typedef FlutterCommandRunner =
 
 /// Adaptador Flutter/FVM. Única borda que conhece `flutter run`, `flutter devices`
 /// e as pastas de plataforma. O restante do Cockpit fala com [DeviceRunTool].
-class FlutterTool implements DeviceRunTool {
+class FlutterTool implements DeviceRunTool, RunSessionTool {
   const FlutterTool({
     this.runProcess,
     this.deviceTimeout = const Duration(seconds: 20),
@@ -189,6 +191,125 @@ class FlutterTool implements DeviceRunTool {
       if (platforms.contains(device.platform)) return device;
     }
     return null;
+  }
+
+  /// `The Flutter DevTools debugger and profiler on macOS is available at: …`
+  static final _devtoolsUrlPattern = RegExp(
+    r'Flutter DevTools[^\n]*?available at:?\s*(https?://\S+)',
+  );
+
+  /// `A Dart VM Service on iPhone is available at: http://127.0.0.1:52914/xK3pQ=/`
+  static final _vmServiceUrlPattern = RegExp(
+    r'(?:Dart VM Service|Observatory)[^\n]*?is available at:?\s*(https?://\S+)',
+  );
+
+  @override
+  DevSessionHint? inspectOutput(ParsedDevCommand command, String text) {
+    if (command.operation != DevOperation.runOnDevice) return null;
+    final joined = joinWrappedPreviewLines(text);
+    final devtools = _captureUrl(_devtoolsUrlPattern, joined);
+    final vmService = _captureUrl(_vmServiceUrlPattern, joined);
+    if (devtools == null && vmService == null) return null;
+    final chosen = devtools ?? vmService;
+    return DevSessionHint(
+      sessionUrl: chosen != null && _serviceUriComplete(chosen) ? chosen : null,
+      consumedUrls: [?devtools, ?vmService],
+    );
+  }
+
+  @override
+  TaskRunAction? action(
+    ParsedDevCommand command, {
+    required String sessionUrl,
+  }) {
+    if (command.operation != DevOperation.runOnDevice) return null;
+    final url = _openableSessionUrl(sessionUrl);
+    if (url == null) return null;
+    return TaskRunAction(
+      id: 'devtools',
+      label: t.cockpit.tasksPanel.openDevTools,
+      icon: 'devtools',
+      url: url,
+    );
+  }
+
+  String? _captureUrl(RegExp pattern, String text) {
+    final match = pattern.firstMatch(text);
+    if (match == null) return null;
+    return _usableHttpUrl(match.group(1)!);
+  }
+
+  /// http(s) com host. Descarta pontuação grudada no fim da linha do Flutter.
+  static String? _usableHttpUrl(String raw) {
+    var value = raw.trim();
+    while (value.isNotEmpty && '.,);'.contains(value[value.length - 1])) {
+      value = value.substring(0, value.length - 1);
+    }
+    final uri = Uri.tryParse(value);
+    if (uri == null || !uri.hasScheme) return null;
+    if (uri.scheme != 'http' && uri.scheme != 'https') return null;
+    if (uri.host.isEmpty) return null;
+    return value;
+  }
+
+  /// URL pronta para o browser. Recusa um serviço cortado no meio (sem `/ws`
+  /// ou sem a barra final) e percent-encode a query `uri`, para o `=` do
+  /// token não ser lido como separador.
+  static String? _openableSessionUrl(String raw) {
+    final usable = _usableHttpUrl(raw);
+    if (usable == null || !_serviceUriComplete(usable)) return null;
+    return _encodeServiceQuery(usable);
+  }
+
+  static bool _serviceUriComplete(String pageUrl) {
+    final service = _serviceUriOf(pageUrl);
+    if (service == null) return false;
+    switch (service.scheme) {
+      case 'ws':
+      case 'wss':
+        return service.path.endsWith('/ws');
+      case 'http':
+      case 'https':
+        return service.path.endsWith('/');
+      default:
+        return false;
+    }
+  }
+
+  static Uri? _serviceUriOf(String pageUrl) {
+    final at = pageUrl.indexOf('uri=');
+    final raw = at < 0 ? pageUrl : pageUrl.substring(at + 4).split('&').first;
+    final String decoded;
+    try {
+      decoded = Uri.decodeFull(raw);
+    } on FormatException {
+      return null;
+    }
+    final uri = Uri.tryParse(decoded);
+    if (uri == null || !uri.hasScheme || uri.host.isEmpty) return null;
+    return uri;
+  }
+
+  /// `?uri=ws://…/token=/ws` vira `?uri=ws%3A%2F%2F…%2Ftoken%3D%2Fws`.
+  /// O DevTools decodifica quando vê `%3A%2F%2F`. Idempotente.
+  static String _encodeServiceQuery(String pageUrl) {
+    const marker = 'uri=';
+    final at = pageUrl.indexOf(marker);
+    if (at < 0) return pageUrl;
+    final valueStart = at + marker.length;
+    final amp = pageUrl.indexOf('&', valueStart);
+    final value = amp < 0
+        ? pageUrl.substring(valueStart)
+        : pageUrl.substring(valueStart, amp);
+    if (value.contains('%3A%2F%2F') || value.contains('%3a%2f%2f')) {
+      return pageUrl;
+    }
+    final encoded = Uri.encodeComponent(value);
+    return pageUrl.replaceRange(
+      valueStart,
+      amp < 0 ? pageUrl.length : amp,
+      encoded,
+    );
   }
 
   @override

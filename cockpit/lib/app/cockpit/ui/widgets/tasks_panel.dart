@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:cockpit/app/cockpit/domain/contracts/dev_tool.dart';
 import 'package:cockpit/app/cockpit/domain/entities/task_definition.dart';
 import 'package:cockpit/app/cockpit/domain/entities/task_device_snapshot.dart';
 import 'package:cockpit/app/cockpit/data/tasks/compose_tasks.dart';
@@ -113,6 +114,10 @@ class _TasksPanelState extends State<TasksPanel> {
                           onSelectDevice: (id) => vm.selectDevice(def, id),
                           onStop: () => vm.stop(def.id),
                           onRestart: () => vm.restart(def.id),
+                          actions: vm.actionsFor(def),
+                          onAction: (action) => context
+                              .read<CockpitViewModel>()
+                              .openTaskSession(def.id, action.url),
                           onCycleProfile: () => vm.cycleProfile(def),
                           onKey: (k) => vm.sendKey(def.id, k),
                         ),
@@ -332,6 +337,8 @@ class _TaskRow extends StatelessWidget {
     required this.onRestart,
     required this.onCycleProfile,
     required this.onKey,
+    required this.actions,
+    required this.onAction,
     required this.device,
     required this.onRefreshDevices,
     required this.onSelectDevice,
@@ -348,6 +355,8 @@ class _TaskRow extends StatelessWidget {
   final VoidCallback onRestart;
   final VoidCallback onCycleProfile;
   final void Function(String key) onKey;
+  final List<TaskRunAction> actions;
+  final void Function(TaskRunAction action) onAction;
   final TaskDeviceSnapshot device;
   final Future<TaskDeviceSnapshot> Function() onRefreshDevices;
   final Future<void> Function(String deviceId) onSelectDevice;
@@ -399,6 +408,12 @@ class _TaskRow extends StatelessWidget {
               ),
             // Esconde o restart da task quando já há uma tecla primária com o
             // ícone de restart (ex.: Flutter "Hot restart") — evita 2 ícones iguais.
+            for (final action in actions)
+              _IconAction(
+                tooltip: action.label,
+                icon: _iconFor(action.icon),
+                onTap: () => onAction(action),
+              ),
             if (!def.interactiveKeys.any(
               (k) => k.primary && k.icon == 'restart',
             ))
@@ -459,6 +474,7 @@ class _TaskRow extends StatelessWidget {
     'restart' => Icons.restart_alt,
     'stop' => Icons.stop,
     'bolt' => Icons.bolt,
+    'devtools' => Icons.developer_mode,
     _ => null,
   };
 }

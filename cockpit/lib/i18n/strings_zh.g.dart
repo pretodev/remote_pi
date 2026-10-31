@@ -523,6 +523,7 @@ class _Translations$cockpit$tasksPanel$zh extends Translations$cockpit$tasksPane
 	@override String get noDevicesTooltip => '没有兼容的设备';
 	@override String get noDevicesMenu => '没有兼容的设备';
 	@override String get lookingForDevices => '正在查找设备…';
+	@override String get openDevTools => '打开 DevTools';
 }
 
 // Path: cockpit.cockpitPage
@@ -2200,6 +2201,7 @@ extension on TranslationsZh {
 			'cockpit.tasksPanel.noDevicesTooltip' => '没有兼容的设备',
 			'cockpit.tasksPanel.noDevicesMenu' => '没有兼容的设备',
 			'cockpit.tasksPanel.lookingForDevices' => '正在查找设备…',
+			'cockpit.tasksPanel.openDevTools' => '打开 DevTools',
 			'cockpit.cockpitPage.chooseProjectFolderDialogTitle' => '选择项目文件夹',
 			'cockpit.cockpitPage.chooseWorkspaceFolderDialogTitle' => '选择工作区文件夹',
 			'cockpit.cockpitPage.workspaceRenamedTitle' => '工作区已重命名',
@@ -2556,9 +2558,9 @@ extension on TranslationsZh {
 			'cockpit.dbConnectionDialog.invalidUrl' => '不是有效的连接 URL。',
 			'cockpit.dbConnectionDialog.sshTunnel' => 'SSH 隧道',
 			'cockpit.dbConnectionDialog.sshHost' => 'SSH 主机',
-			'cockpit.dbConnectionDialog.sshPort' => 'SSH 端口',
 			_ => null,
 		} ?? switch (path) {
+			'cockpit.dbConnectionDialog.sshPort' => 'SSH 端口',
 			'cockpit.dbConnectionDialog.sshUser' => 'SSH 用户',
 			'cockpit.dbConnectionDialog.privateKey' => '私钥',
 			'cockpit.dbConnectionDialog.choosePrivateKeyPlaceholder' => '选择一个私钥…',
@@ -3070,9 +3072,9 @@ extension on TranslationsZh {
 			'fileOperation.error.notFound' => ({required Object name}) => '未找到：「${name}」。',
 			'fileOperation.error.invalidPath' => '无效的路径。',
 			'fileOperation.error.emptyName' => '名称不能为空。',
-			'fileOperation.error.noWorkspace' => '未选择工作区。',
 			_ => null,
 		} ?? switch (path) {
+			'fileOperation.error.noWorkspace' => '未选择工作区。',
 			'fileOperation.error.cannotMoveIntoItself' => '无法将文件夹移动到其自身内部。',
 			'fileOperation.error.clipboardEmpty' => '剪贴板为空。',
 			'fileOperation.error.notScratchTab' => '此标签页不是草稿文件。',

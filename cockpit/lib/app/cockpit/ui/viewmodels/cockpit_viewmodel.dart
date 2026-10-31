@@ -263,6 +263,10 @@ class CockpitViewModel extends ChangeNotifier
 
   StreamSubscription<TaskPreviewUrl>? _previewSub;
 
+  /// Painel de sessão (DevTools) já aberto por task. O segundo clique foca
+  /// o mesmo painel; outra task não reusa, mesmo que a porta seja a mesma.
+  final _taskBrowsers = <String, ({String sessionId, String url})>{};
+
   /// Assinatura do turn-status remoto (Wave G); cancelada no dispose.
   StreamSubscription<RemoteTurnStatus>? _remoteTurnSub;
 
@@ -2782,6 +2786,50 @@ class CockpitViewModel extends ChangeNotifier
     }
   }
 
+  /// Abre a URL de sessão de uma task (DevTools). Mesmo destino do auto-open
+  /// de preview: painel embutido no macOS/Windows, browser do SO no Linux.
+  /// Não usa o reuse por origem — duas apps em `127.0.0.1:9100` com `?uri=`
+  /// diferente ficam em painéis separados. O segundo clique na mesma task
+  /// foca o painel e só navega se a URL mudou (restart).
+  void openTaskSession(String taskId, String url) {
+    final normalized = normalizeBrowserUrl(url);
+    if (normalized.isEmpty || taskId.isEmpty) return;
+    if (!BrowserCapability.resolve().isInline) {
+      unawaited(openUrlExternally(normalized));
+      return;
+    }
+    final known = _taskBrowsers[taskId];
+    if (known != null) {
+      final existing = _sessions[known.sessionId];
+      if (existing is BrowserSession) {
+        final leaf = _leafWithTab(existing.projectId, existing.id);
+        if (leaf != null) {
+          if (known.url != normalized) {
+            existing.requestUrl(normalized);
+            _taskBrowsers[taskId] = (sessionId: existing.id, url: normalized);
+          }
+          if (existing.projectId == _selectedProjectId) {
+            selectTab(leaf.id, existing.id);
+          }
+          return;
+        }
+      }
+    }
+    final created = openWebBrowser(normalized, reuse: false);
+    if (created != null) {
+      _taskBrowsers[taskId] = (sessionId: created.id, url: normalized);
+    }
+  }
+
+  LeafPane? _leafWithTab(String projectId, String tabId) {
+    final tree = _trees[projectId];
+    if (tree == null) return null;
+    for (final leaf in leaves(tree)) {
+      if (leaf.tabs.contains(tabId)) return leaf;
+    }
+    return null;
+  }
+
   /// Abre uma aba de **navegador** (plano 58). [url] vazia = aba em branco com
   /// o campo de URL focado (botão da pane). [inPane] força a pane alvo (botão);
   /// default = pane focada. Com [reuse], foca uma aba de navegador já aberta na
@@ -4958,9 +5006,9 @@ class CockpitViewModel extends ChangeNotifier
     if (_activeRemoteHost() != null) {
       // Mesma regra do local: commit implícito em dois repositórios diferentes
       // não acontece — o usuário comita cada um por vez.
-      final staged = rootsOf(pid)
-          .where((root) => stagedFilesOfRoot(root).isNotEmpty)
-          .toList();
+      final staged = rootsOf(
+        pid,
+      ).where((root) => stagedFilesOfRoot(root).isNotEmpty).toList();
       if (staged.isEmpty) {
         return 'There are no staged changes to commit.';
       }
@@ -4987,9 +5035,9 @@ class CockpitViewModel extends ChangeNotifier
         return '$e';
       }
     }
-    final roots = rootsOf(pid)
-        .where((root) => stagedFilesOfRoot(root).isNotEmpty)
-        .toList();
+    final roots = rootsOf(
+      pid,
+    ).where((root) => stagedFilesOfRoot(root).isNotEmpty).toList();
     if (roots.isEmpty) return 'There are no staged changes to commit.';
     if (roots.length > 1) {
       return 'Stage changes belong to multiple repositories. Commit them separately.';
@@ -5280,9 +5328,9 @@ class CockpitViewModel extends ChangeNotifier
     if (pid == null) {
       return const Failure(AutomationError(AutomationErrorKind.noWorkspace));
     }
-    final roots = rootsOf(pid)
-        .where((root) => stagedFilesOfRoot(root).isNotEmpty)
-        .toList();
+    final roots = rootsOf(
+      pid,
+    ).where((root) => stagedFilesOfRoot(root).isNotEmpty).toList();
     if (roots.isEmpty) {
       return const Failure(
         AutomationError(AutomationErrorKind.noStagedChanges),
@@ -6355,8 +6403,9 @@ class CockpitViewModel extends ChangeNotifier
       final tree = _trees[id];
       final tabs = tree == null
           ? 0
-          : leaves(tree)
-                .fold<int>(0, (count, leaf) => count + leaf.tabs.length);
+          : leaves(
+              tree,
+            ).fold<int>(0, (count, leaf) => count + leaf.tabs.length);
       PerformanceDiagnostics.instance.record(PerfMetric.workspaceReadyFrame, {
         PerfField.durationUs: clock.elapsedMicroseconds,
         PerfField.tabs: tabs,

@@ -23,4 +23,34 @@ class DevToolRegistry {
     }
     return null;
   }
+
+  /// Sessão anunciada no output, pela primeira ferramenta que reconhece o argv.
+  DevSessionHint? inspectOutput(
+    String command,
+    List<String> args,
+    String text,
+  ) {
+    for (final tool in _tools) {
+      if (tool is! RunSessionTool) continue;
+      final parsed = tool.match(command, args);
+      if (parsed == null) continue;
+      return tool.inspectOutput(parsed, text);
+    }
+    return null;
+  }
+
+  /// Ação da execução, se a ferramenta do argv oferecer uma para [sessionUrl].
+  TaskRunAction? action(
+    String command,
+    List<String> args, {
+    required String sessionUrl,
+  }) {
+    for (final tool in _tools) {
+      if (tool is! RunSessionTool) continue;
+      final parsed = tool.match(command, args);
+      if (parsed == null) continue;
+      return tool.action(parsed, sessionUrl: sessionUrl);
+    }
+    return null;
+  }
 }

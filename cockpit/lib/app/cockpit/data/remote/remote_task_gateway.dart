@@ -69,6 +69,14 @@ class RemoteTaskRunner implements TaskRunnerGateway {
   @override
   Stream<TaskPreviewUrl> previewUrls() => const Stream<TaskPreviewUrl>.empty();
 
+  // A URL de DevTools impressa no host aponta para o loopback de lá. Não
+  // oferecemos a ação — o mesmo corte do seletor de device.
+  @override
+  Stream<TaskSessionUrl> sessionUrls() => const Stream<TaskSessionUrl>.empty();
+
+  @override
+  String? sessionUrlOf(String taskId) => null;
+
   @override
   TaskRun runOf(String taskId) =>
       _running[taskId]?.state ?? _lastState[taskId] ?? TaskRun.idleFor(taskId);

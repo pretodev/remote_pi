@@ -181,7 +181,8 @@
       "deviceUnavailableTooltip": "${name} 不可用",
       "noDevicesTooltip": "没有兼容的设备",
       "noDevicesMenu": "没有兼容的设备",
-      "lookingForDevices": "正在查找设备…"
+      "lookingForDevices": "正在查找设备…",
+      "openDevTools": "打开 DevTools"
     },
     "cockpitPage": {
       "chooseProjectFolderDialogTitle": "选择项目文件夹",

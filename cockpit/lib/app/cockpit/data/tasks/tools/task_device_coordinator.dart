@@ -25,6 +25,22 @@ class TaskDeviceCoordinator {
     return _parsed(def, profileName)?.operation == DevOperation.runOnDevice;
   }
 
+  /// Ação da execução, ou null se a ferramenta não oferece uma, se [sessionUrl]
+  /// não serve, ou se o workspace é remoto (a URL seria do loopback do host).
+  TaskRunAction? sessionAction(
+    TaskDefinition def, {
+    required String? profileName,
+    required String sessionUrl,
+    required bool remote,
+  }) {
+    if (remote || sessionUrl.isEmpty) return null;
+    return _tools.action(
+      def.command,
+      _resolvedArgs(def, profileName),
+      sessionUrl: sessionUrl,
+    );
+  }
+
   TaskDeviceSnapshot snapshot(
     TaskDefinition def, {
     required String? profileName,

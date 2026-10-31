@@ -468,6 +468,92 @@ void main() {
       isFalse,
     );
   });
+
+  group('devtools session', () {
+    const vm = 'http://127.0.0.1:54321/AbCdEf=/';
+    const devtools = 'http://127.0.0.1:9100?uri=$vm';
+
+    ParsedDevCommand run() => tool.match('flutter', ['run'])!;
+
+    test('prefers the DevTools URL and consumes both', () {
+      final hint = tool.inspectOutput(run(), '''
+A Dart VM Service on macOS is available at: $vm
+The Flutter DevTools debugger and profiler on macOS is available at: $devtools
+''');
+      expect(hint, isNotNull);
+      expect(hint!.sessionUrl, devtools);
+      expect(hint.consumedUrls, [devtools, vm]);
+    });
+
+    test('falls back to the VM Service URI', () {
+      final hint = tool.inspectOutput(
+        run(),
+        'A Dart VM Service on iPhone is available at: $vm\n',
+      );
+      expect(hint!.sessionUrl, vm);
+      expect(hint.consumedUrls, [vm]);
+    });
+
+    test('ignores other flutter commands and invalid urls', () {
+      const line = 'A Dart VM Service on macOS is available at: $vm\n';
+      expect(
+        tool.inspectOutput(tool.match('flutter', ['test'])!, line),
+        isNull,
+      );
+      expect(
+        tool.inspectOutput(tool.match('flutter', ['build', 'apk'])!, line),
+        isNull,
+      );
+      expect(
+        tool.inspectOutput(
+          run(),
+          'The Flutter DevTools debugger is available at: ftp://127.0.0.1/x\n',
+        ),
+        isNull,
+      );
+      expect(tool.action(run(), sessionUrl: 'not a url'), isNull);
+      expect(
+        tool.action(tool.match('flutter', ['test'])!, sessionUrl: vm),
+        isNull,
+      );
+    });
+
+    test('action is only the devtools opener', () {
+      final action = tool.action(run(), sessionUrl: devtools);
+      expect(action, isNotNull);
+      expect(action!.id, 'devtools');
+      expect(action.icon, 'devtools');
+      expect(_serviceTarget(action.url), vm);
+      expect(action.url, contains('%3D'));
+      expect(action.label, 'Open DevTools');
+    });
+
+    test('a service uri cut before the auth padding is not opened', () {
+      const cut = 'http://127.0.0.1:9100?uri=ws://127.0.0.1:46075/vNzGJsPDZ';
+      expect(tool.action(run(), sessionUrl: cut), isNull);
+      final hint = tool.inspectOutput(
+        run(),
+        'The Flutter DevTools debugger and profiler on Linux is available at: $cut\n',
+      );
+      expect(hint!.sessionUrl, isNull);
+      expect(hint.consumedUrls, [cut]);
+    });
+
+    test('registry does not claim npm output', () {
+      final registry = DevToolRegistry(const [FlutterTool()]);
+      expect(
+        registry.inspectOutput('npm', ['run', 'dev'], 'available at: $vm'),
+        isNull,
+      );
+      expect(registry.action('npm', ['run', 'dev'], sessionUrl: vm), isNull);
+    });
+  });
+}
+
+String _serviceTarget(String page) {
+  final at = page.indexOf('uri=');
+  final raw = at < 0 ? page : page.substring(at + 4).split('&').first;
+  return Uri.decodeFull(raw);
 }
 
 void expectRun(

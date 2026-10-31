@@ -181,7 +181,8 @@
       "deviceUnavailableTooltip": "${name} no está disponible",
       "noDevicesTooltip": "Ningún dispositivo compatible",
       "noDevicesMenu": "Ningún dispositivo compatible",
-      "lookingForDevices": "Buscando dispositivos…"
+      "lookingForDevices": "Buscando dispositivos…",
+      "openDevTools": "Abrir DevTools"
     },
     "cockpitPage": {
       "chooseProjectFolderDialogTitle": "Elige la carpeta del proyecto",

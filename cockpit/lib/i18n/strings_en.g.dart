@@ -1173,6 +1173,9 @@ class Translations$cockpit$tasksPanel$en {
 
 	/// en: 'Looking for devices…'
 	String get lookingForDevices => 'Looking for devices…';
+
+	/// en: 'Open DevTools'
+	String get openDevTools => 'Open DevTools';
 }
 
 // Path: cockpit.cockpitPage
@@ -4640,6 +4643,7 @@ extension on Translations {
 			'cockpit.tasksPanel.noDevicesTooltip' => 'No compatible device',
 			'cockpit.tasksPanel.noDevicesMenu' => 'No compatible devices',
 			'cockpit.tasksPanel.lookingForDevices' => 'Looking for devices…',
+			'cockpit.tasksPanel.openDevTools' => 'Open DevTools',
 			'cockpit.cockpitPage.chooseProjectFolderDialogTitle' => 'Choose the project folder',
 			'cockpit.cockpitPage.chooseWorkspaceFolderDialogTitle' => 'Choose the workspace folder',
 			'cockpit.cockpitPage.workspaceRenamedTitle' => 'Workspace renamed',
@@ -4996,9 +5000,9 @@ extension on Translations {
 			'cockpit.dbConnectionDialog.invalidUrl' => 'Not a valid connection URL.',
 			'cockpit.dbConnectionDialog.sshTunnel' => 'SSH Tunnel',
 			'cockpit.dbConnectionDialog.sshHost' => 'SSH Host',
-			'cockpit.dbConnectionDialog.sshPort' => 'SSH Port',
 			_ => null,
 		} ?? switch (path) {
+			'cockpit.dbConnectionDialog.sshPort' => 'SSH Port',
 			'cockpit.dbConnectionDialog.sshUser' => 'SSH User',
 			'cockpit.dbConnectionDialog.privateKey' => 'Private key',
 			'cockpit.dbConnectionDialog.choosePrivateKeyPlaceholder' => 'Choose a private key…',
@@ -5510,9 +5514,9 @@ extension on Translations {
 			'fileOperation.error.notFound' => ({required Object name}) => 'Not found: “${name}”.',
 			'fileOperation.error.invalidPath' => 'Invalid path.',
 			'fileOperation.error.emptyName' => 'The name cannot be empty.',
-			'fileOperation.error.noWorkspace' => 'No workspace selected.',
 			_ => null,
 		} ?? switch (path) {
+			'fileOperation.error.noWorkspace' => 'No workspace selected.',
 			'fileOperation.error.cannotMoveIntoItself' => 'Cannot move a folder into itself.',
 			'fileOperation.error.clipboardEmpty' => 'Clipboard is empty.',
 			'fileOperation.error.notScratchTab' => 'This tab is not a scratch file.',
